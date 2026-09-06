@@ -738,6 +738,10 @@ $(document).ready(function() {
     var _TimeRules = '<%:Time Rules%>';
     var _Apps = '<%:Apps%>';
     var _Status = '<%:Status%>';
+    var _UploadLimit = '<%:Upload Limit (Kbps)%>';
+    var _DownloadLimit = '<%:Download Limit (Kbps)%>';
+    var _RateOverlapHint = '<%:When multiple active rate rules match traffic, the most restrictive rule is used.%>';
+    var _InvalidRate = '<%:Rate must be a non-negative integer no greater than 10000000 Kbps.%>';
     var _Actions = '<%:Actions%>';
     var _AllUsers = '<%:All Users%>';
     var _SingleUser = '<%:Single User%>';
@@ -875,6 +879,8 @@ $(document).ready(function() {
                     } else if (!rule.time_rules) {
                         rule.time_rules = [];
                     }
+                    rule.upload_kbps = Math.max(0, parseInt(rule.upload_kbps, 10) || 0);
+                    rule.download_kbps = Math.max(0, parseInt(rule.download_kbps, 10) || 0);
                     if (rule.filter_quic === undefined || rule.filter_quic === null || isNaN(parseInt(rule.filter_quic, 10))) {
                         rule.filter_quic = 0;
                     } else {
@@ -1003,6 +1009,7 @@ $(document).ready(function() {
         $headerRow.append($('<th>').text(_Mode));
         $headerRow.append($('<th>').text(_TimeRules));
         $headerRow.append($('<th>').text(_Apps));
+        $headerRow.append($('<th>').text(_UploadLimit + '/' + _DownloadLimit));
         $headerRow.append($('<th>').text(_Status));
         $headerRow.append($('<th>').text(_Actions));
         $thead.append($headerRow);
@@ -1062,6 +1069,8 @@ $(document).ready(function() {
                 appText = _ZeroApps;
             }
             $row.append($('<td>').text(appText));
+            var up = parseInt(rule.upload_kbps, 10) || 0, down = parseInt(rule.download_kbps, 10) || 0;
+            $row.append($('<td>').text((up ? up + ' Kbps' : '-') + ' / ' + (down ? down + ' Kbps' : '-')));
             
             var enabledValue = rule.enabled;
             if (typeof enabledValue === 'boolean') {
@@ -1495,6 +1504,8 @@ $(document).ready(function() {
         $('input[name="rule-mode"][value="' + rule.mode + '"]').prop('checked', true);
         onModeChange();
         $('#rule-filter-quic').prop('checked', parseInt(rule.filter_quic || 0, 10) === 1);
+        $('#rule-upload-kbps').val(parseInt(rule.upload_kbps, 10) || 0);
+        $('#rule-download-kbps').val(parseInt(rule.download_kbps, 10) || 0);
         if (rule.mode === 2) {
             $('#rule-user').val(rule.user_mac);
         }
@@ -1938,6 +1949,12 @@ $(document).ready(function() {
             return false;
         }
         
+        var uploadKbps = $('#rule-upload-kbps').val().trim();
+        var downloadKbps = $('#rule-download-kbps').val().trim();
+        if (!/^\d+$/.test(uploadKbps) || !/^\d+$/.test(downloadKbps) || Number(uploadKbps) > 10000000 || Number(downloadKbps) > 10000000) {
+            if (typeof showCommonModal === 'function') showCommonModal(_InvalidRate, 2500); else alert(_InvalidRate);
+            return false;
+        }
         var enabled = $('#rule-enabled').is(':checked') ? 1 : 0;
         var filterQuic = $('#rule-filter-quic').is(':checked') ? 1 : 0;
         
@@ -1996,7 +2013,9 @@ $(document).ready(function() {
             time_rules: timeRules,
             app_ids: compressAppIds(appIds),
             enabled: enabled,
-            filter_quic: filterQuic
+            filter_quic: filterQuic,
+            upload_kbps: Number(uploadKbps),
+            download_kbps: Number(downloadKbps)
         };
         
         if (isEditMode) {
@@ -2083,6 +2102,8 @@ $(document).ready(function() {
         
         $('#rule-enabled').prop('checked', true);
         $('#rule-filter-quic').prop('checked', false);
+        $('#rule-upload-kbps').val(0);
+        $('#rule-download-kbps').val(0);
         
         $('input[name="rule-mode"][value="1"]').prop('checked', true);
         $('input[name="rule-mode"][value="2"]').prop('checked', false);
@@ -2285,6 +2306,15 @@ $(document).ready(function() {
                             </select>
                         </div>
                         
+                        <div class="form-group">
+                            <label for="rule-upload-kbps"><%:Upload Limit (Kbps)%></label>
+                            <input type="text" inputmode="numeric" id="rule-upload-kbps" value="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="rule-download-kbps"><%:Download Limit (Kbps)%></label>
+                            <input type="text" inputmode="numeric" id="rule-download-kbps" value="0">
+                            <div style="margin-top: 6px; color: #999; font-size: 12px;"><%:0 means unlimited. When multiple active rate rules match traffic, the most restrictive rule is used.%></div>
+                        </div>
                         <div class="form-group">
                             <label><%:Time Rules%> *</label>
                             <button type="button" id="btn-add-time-rule" class="btn-add-time"><%:Add Time Rule%></button>

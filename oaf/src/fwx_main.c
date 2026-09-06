@@ -1923,6 +1923,12 @@ int dpi_dns_proto(flow_info_t *flow)
 }
 
 
+static inline void mark_app_filter_traffic(struct sk_buff *skb, int appid, af_client_info_t *client)
+{
+    u32 mark = fwx_get_app_filter_mark(appid, client->mac);
+    if (mark) skb->mark = mark;
+}
+
 int match_app_filter_rule(int appid, af_client_info_t *client)
 {
 
@@ -2316,6 +2322,7 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 			conn->state = AF_CONN_DPI_FINISHED;
 			if (!conn->ignore && !is_record_whitelist)
 				af_update_active_app_list(client, &flow);
+			mark_app_filter_traffic(skb, flow.app_id, client);
 			if (match_app_filter_rule(flow.app_id, client)) {
 				flow.drop = 1;
 				conn->drop = 1;
@@ -2413,6 +2420,7 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	{
 		
 		AF_LMT_DEBUG("ct appid = %d\n", app_id);
+		mark_app_filter_traffic(skb, app_id, client);
 		u_int32_t orig_action = fwx_ct_test_bit(ct, FWX_CT_DROP_BIT);
 
 		int ct_action = fwx_ct_test_bit(ct, FWX_CT_DROP_BIT);
@@ -2508,6 +2516,7 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 			AF_LMT_DEBUG("gateway set ignore bit, mark = 0x%x\n", fwx_ct_mark_get(ct));
 		}
 		
+		mark_app_filter_traffic(skb, flow.app_id, client);
 		if (match_app_filter_rule(flow.app_id, client)) {
 			flow.drop = 1;
 			fwx_ct_set_bit(ct, FWX_CT_DROP_BIT, 1);

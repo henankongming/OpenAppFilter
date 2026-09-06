@@ -247,6 +247,9 @@ int fwx_add_app_filter_rule(int rule_id) {
     rule->rule_id = rule_id;
     rule->enable = 1;
     rule->filter_quic = 0;
+    rule->traffic_mark = 0;
+    rule->upload_kbps = 0;
+    rule->download_kbps = 0;
     fwx_mac_config_init(&rule->mac_list);
     app_id_config_init(&rule->app_id_list);
     INIT_LIST_HEAD(&rule->list);
@@ -335,9 +338,10 @@ app_filter_rule_t *fwx_match_app_filter_rule(int app_id, const unsigned char *ma
         if (!rule->enable) {
             continue;
         }
-        
-
-
+        /* Rate rules classify traffic for tc; they do not drop it. */
+        if (rule->upload_kbps || rule->download_kbps) {
+            continue;
+        }
 
         mac_node = fwx_find_mac_node(&rule->mac_list, mac);
         if (!mac_node) {
@@ -374,6 +378,31 @@ app_filter_rule_t *fwx_match_app_filter_rule(int app_id, const unsigned char *ma
     return NULL;
 }
 
+u32 fwx_get_app_filter_mark(int app_id, const unsigned char *mac)
+{
+    app_filter_rule_t *rule;
+    u32 mark = 0;
+
+    app_filter_read_lock();
+    list_for_each_entry(rule, &app_filter_rule_list, list) {
+        if (!rule->enable || !rule->traffic_mark || (!rule->upload_kbps && !rule->download_kbps))
+            continue;
+        if (!fwx_find_mac_node(&rule->mac_list, mac)) {
+            int i, empty = 1;
+            for (i = 0; i < MAC_HASH_SIZE; i++) if (!hlist_empty(&rule->mac_list.hash_table[i])) { empty = 0; break; }
+            if (!empty) continue;
+        }
+        if ((app_id == FWX_QUIC_PROTO && rule->filter_quic) ||
+            (app_id != FWX_QUIC_PROTO && find_app_id_node(&rule->app_id_list, app_id))) {
+            /* First match is deterministic: rule_manager orders overlapping rate rules by strictness. */
+            mark = rule->traffic_mark;
+            break;
+        }
+    }
+    app_filter_read_unlock();
+    return mark;
+}
+
 int fwx_api_add_app_filter_rule(cJSON *data_obj) {
     cJSON *rule_id_obj;
     
@@ -406,6 +435,9 @@ int fwx_api_mod_app_filter_rule(cJSON *data_obj) {
     cJSON *action_obj;
     cJSON *enable_obj;
     cJSON *filter_quic_obj;
+    cJSON *traffic_mark_obj;
+    cJSON *upload_kbps_obj;
+    cJSON *download_kbps_obj;
     app_filter_rule_t *rule = NULL;
     
     if (!data_obj) {
@@ -504,9 +536,17 @@ int fwx_api_mod_app_filter_rule(cJSON *data_obj) {
     }
 
     filter_quic_obj = cJSON_GetObjectItem(data_obj, "filter_quic");
-    if (filter_quic_obj) {
-        rule->filter_quic = (filter_quic_obj->valueint == 1) ? 1 : 0;
-    }
+    if (filter_quic_obj) rule->filter_quic = (filter_quic_obj->valueint == 1) ? 1 : 0;
+
+    traffic_mark_obj = cJSON_GetObjectItem(data_obj, "traffic_mark");
+    upload_kbps_obj = cJSON_GetObjectItem(data_obj, "upload_kbps");
+    download_kbps_obj = cJSON_GetObjectItem(data_obj, "download_kbps");
+    if (traffic_mark_obj && traffic_mark_obj->valueint >= 0)
+        rule->traffic_mark = (u32)traffic_mark_obj->valueint;
+    if (upload_kbps_obj && upload_kbps_obj->valueint >= 0)
+        rule->upload_kbps = (u32)upload_kbps_obj->valueint;
+    if (download_kbps_obj && download_kbps_obj->valueint >= 0)
+        rule->download_kbps = (u32)download_kbps_obj->valueint;
     
 	fwx_update_appfilter_jiffies();
     return 0;

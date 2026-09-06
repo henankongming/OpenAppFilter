@@ -12,7 +12,7 @@ TARGET_CFLAGS +=-Werror=implicit-function-declaration
 define Package/appfilter
   SECTION:=Base system
   CATEGORY:=Base system
-  DEPENDS:=+libubox +libubus  +libuci +libpthread +libjson-c +libblobmsg-json +libuci-lua +libsqlite3  +libcurl 
+  DEPENDS:=+libubox +libubus  +libuci +libpthread +libjson-c +libblobmsg-json +libuci-lua +libsqlite3  +libcurl +tc +kmod-sched-htb +kmod-ifb +kmod-sched-act-mirred +kmod-netem
   TITLE:=OAF service
 endef
 
@@ -27,7 +27,7 @@ define Build/Compile
 	CFLAGS="$(TARGET_CFLAGS)" \
 	LIBS="$(TARGET_LDFLAGS) -lm -lpthread -lubox -luci -lubus -ljson-c -lblobmsg_json -lsqlite3 -lcurl" \
 	all
-endef	
+endef
 
 
 define Build/Compile/Default
@@ -35,7 +35,7 @@ define Build/Compile/Default
 endef
 
 define Package/appfilter/description
-	OAF service 
+	OAF service
 endef
 
 define Package/appfilter/conffiles

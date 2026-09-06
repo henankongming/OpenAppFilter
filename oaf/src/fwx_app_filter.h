@@ -32,6 +32,10 @@ typedef struct app_filter_rule {
     int rule_id;                
     int enable;                 
     int filter_quic;
+    /* Reserved OAF traffic-shaping mark (0x4f00xxxx), never overlaps app-id bits. */
+    u32 traffic_mark;
+    u32 upload_kbps;
+    u32 download_kbps;
     mac_config_t mac_list;      
     app_id_config_t app_id_list; 
     struct list_head list;  
@@ -62,6 +66,7 @@ int fwx_del_app_id_from_rule(int rule_id, int app_id);
 
 
 app_filter_rule_t *fwx_match_app_filter_rule(int app_id, const unsigned char *mac);
+u32 fwx_get_app_filter_mark(int app_id, const unsigned char *mac);
 
 
 int fwx_api_add_app_filter_rule(cJSON *data_obj);

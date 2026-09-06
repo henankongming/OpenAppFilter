@@ -27,6 +27,7 @@
 
 #define APPFILTER_RULES_STATE_FILE "/tmp/appfilter_rules_state"
 #define APPFILTER_WHITELIST_STATE_FILE "/tmp/appfilter_whitelist_state"
+#define APPFILTER_RATE_MAX_KBPS 10000000
 
 
 static void set_state_file(const char *file_path) {
@@ -70,6 +71,15 @@ static const char *get_option_value(struct uci_section *s, const char *option_na
         return NULL;
     }
     return o->v.string;
+}
+
+static int get_rate_kbps(struct json_object *obj, int *rate)
+{
+    if (!rate) return 0;
+    if (!obj) { *rate = 0; return 1; } /* absent in legacy requests */
+    if (json_object_get_type(obj) != json_type_int) return 0;
+    *rate = json_object_get_int(obj);
+    return *rate >= 0 && *rate <= APPFILTER_RATE_MAX_KBPS;
 }
 
 static int normalize_app_id_token(const char *raw, char *out, int out_len) {
@@ -136,6 +146,8 @@ struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
         const char *user_name_str = get_option_value(s, "user_name");
         const char *enabled_str = get_option_value(s, "enabled");
         const char *filter_quic_str = get_option_value(s, "filter_quic");
+        const char *upload_kbps_str = get_option_value(s, "upload_kbps");
+        const char *download_kbps_str = get_option_value(s, "download_kbps");
 
         struct json_object *rule_obj = json_object_new_object();
         if (!rule_obj) {
@@ -150,6 +162,9 @@ struct json_object *fwx_api_get_filter_rules(struct json_object *req_obj) {
         json_object_object_add(rule_obj, "user_name", json_object_new_string(user_name_str ? user_name_str : ""));
         json_object_object_add(rule_obj, "enabled", json_object_new_int(enabled_str ? atoi(enabled_str) : 1));
         json_object_object_add(rule_obj, "filter_quic", json_object_new_int(filter_quic_str ? atoi(filter_quic_str) : 0));
+        /* Missing options are intentionally returned as zero for old rules. */
+        json_object_object_add(rule_obj, "upload_kbps", json_object_new_int(upload_kbps_str ? atoi(upload_kbps_str) : 0));
+        json_object_object_add(rule_obj, "download_kbps", json_object_new_int(download_kbps_str ? atoi(download_kbps_str) : 0));
 
         // Process time_rule list
         struct json_object *time_rules_array = json_object_new_array();
@@ -244,8 +259,12 @@ struct json_object *fwx_api_add_filter_rule(struct json_object *req_obj) {
     struct json_object *filter_quic_obj = json_object_object_get(req_obj, "filter_quic");
     struct json_object *time_rules_obj = json_object_object_get(req_obj, "time_rules");
     struct json_object *app_ids_obj = json_object_object_get(req_obj, "app_ids");
+    struct json_object *upload_kbps_obj = json_object_object_get(req_obj, "upload_kbps");
+    struct json_object *download_kbps_obj = json_object_object_get(req_obj, "download_kbps");
+    int upload_kbps, download_kbps;
     int i, j;
-    if (!name_obj || !mode_obj || !time_rules_obj || !app_ids_obj) {
+    if (!name_obj || !mode_obj || !time_rules_obj || !app_ids_obj ||
+        !get_rate_kbps(upload_kbps_obj, &upload_kbps) || !get_rate_kbps(download_kbps_obj, &download_kbps)) {
         LOG_ERROR("Missing required fields\n");
         return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     }
@@ -291,6 +310,11 @@ struct json_object *fwx_api_add_filter_rule(struct json_object *req_obj) {
     int enabled = enabled_obj ? json_object_get_int(enabled_obj) : 1;
     snprintf(enabled_str, sizeof(enabled_str), "%d", enabled);
     fwx_uci_set_value(uci_ctx, buf, enabled_str);
+
+    snprintf(buf, sizeof(buf), "appfilter.@rule[-1].upload_kbps");
+    { char rate_str[16]; snprintf(rate_str, sizeof(rate_str), "%d", upload_kbps); fwx_uci_set_value(uci_ctx, buf, rate_str); }
+    snprintf(buf, sizeof(buf), "appfilter.@rule[-1].download_kbps");
+    { char rate_str[16]; snprintf(rate_str, sizeof(rate_str), "%d", download_kbps); fwx_uci_set_value(uci_ctx, buf, rate_str); }
 
     snprintf(buf, sizeof(buf), "appfilter.@rule[-1].filter_quic");
     {
@@ -363,6 +387,13 @@ struct json_object *fwx_api_update_filter_rule(struct json_object *req_obj) {
     }
     
     int rule_id = json_object_get_int(id_obj);
+    struct json_object *upload_kbps_obj = json_object_object_get(req_obj, "upload_kbps");
+    struct json_object *download_kbps_obj = json_object_object_get(req_obj, "download_kbps");
+    int upload_kbps, download_kbps;
+    if (!get_rate_kbps(upload_kbps_obj, &upload_kbps) || !get_rate_kbps(download_kbps_obj, &download_kbps)) {
+        LOG_ERROR("Invalid rate: expected integer from 0 to %d Kbps\n", APPFILTER_RATE_MAX_KBPS);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
     
     struct uci_context *uci_ctx = uci_alloc_context();
     if (!uci_ctx) {
@@ -413,6 +444,9 @@ struct json_object *fwx_api_update_filter_rule(struct json_object *req_obj) {
         snprintf(enabled_str, sizeof(enabled_str), "%d", json_object_get_int(enabled_obj));
         fwx_uci_set_value(uci_ctx, buf, enabled_str);
     }
+
+    if (upload_kbps_obj) { snprintf(buf, sizeof(buf), "appfilter.@rule[%d].upload_kbps", index); { char rate_str[16]; snprintf(rate_str, sizeof(rate_str), "%d", upload_kbps); fwx_uci_set_value(uci_ctx, buf, rate_str); } }
+    if (download_kbps_obj) { snprintf(buf, sizeof(buf), "appfilter.@rule[%d].download_kbps", index); { char rate_str[16]; snprintf(rate_str, sizeof(rate_str), "%d", download_kbps); fwx_uci_set_value(uci_ctx, buf, rate_str); } }
 
     struct json_object *filter_quic_obj = json_object_object_get(req_obj, "filter_quic");
     if (filter_quic_obj) {

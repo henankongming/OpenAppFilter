@@ -79,9 +79,19 @@ EOF
 EOF
 }
 
+cleanup_rate_shaping(){
+	# OAF reserves only this IFB and its root/ingress qdiscs.
+	local wan="$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)"
+	[ -n "$wan" ] && tc qdisc del dev "$wan" ingress 2>/dev/null
+	[ -n "$wan" ] && tc qdisc del dev "$wan" root 2>/dev/null
+	tc qdisc del dev oaf-ifb0 root 2>/dev/null
+	ip link del oaf-ifb0 2>/dev/null
+}
+
 stop_service(){
 	killall -9 oafd
 	killall -9 rule_manager
+	cleanup_rate_shaping
 }
 
 start_service(){

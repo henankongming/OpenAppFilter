@@ -31,7 +31,13 @@ local APPFILTER_WHITELIST_STATE_FILE = "/tmp/appfilter_whitelist_state"
 local MACFILTER_WHITELIST_STATE_FILE = "/tmp/macfilter_whitelist_state"
 local RECORD_WHITELIST_STATE_FILE = "/tmp/record_whitelist_state"
 
-local appfilter_rules_state = {} 
+local appfilter_rules_state = {}
+-- OAF owns marks 0x4f000001..0x4f000040 and HTB minors 101..140 only.
+-- Slots are recycled when a rule disappears, avoiding firewall/QoS mark collisions.
+local rate_slots, rate_slot_owner = {}, {}
+local RATE_MARK_PREFIX = 0x4f000000
+local RATE_MAX_KBPS = 10000000
+
 local macfilter_rules_state = {}
 
 local appfilter_enable_state = nil
@@ -362,6 +368,8 @@ local function load_appfilter_rules()
             mode = tonumber(section.mode) or 1,
             enabled = tonumber(section.enabled) or 1,
             filter_quic = tonumber(section.filter_quic) or 0,
+            upload_kbps = math.max(0, math.min(RATE_MAX_KBPS, tonumber(section.upload_kbps) or 0)),
+            download_kbps = math.max(0, math.min(RATE_MAX_KBPS, tonumber(section.download_kbps) or 0)),
             user_mac = section.user_mac or "",
             time_rules = {},
             app_ids = {}
@@ -1167,6 +1175,81 @@ local function sync_effective_mac_rule(rule_id, rule_name, mac_list)
     return true
 end
 
+-- HTB is used for both directions. Upload is shaped on WAN egress; WAN ingress is
+-- redirected with act_mirred to OAF's dedicated IFB before download HTB shaping.
+local function get_rate_slot(rule_id)
+    if rate_slots[rule_id] then return rate_slots[rule_id] end
+    for slot = 1, 64 do
+        if not rate_slot_owner[slot] then
+            rate_slots[rule_id], rate_slot_owner[slot] = slot, rule_id
+            return slot
+        end
+    end
+    return nil
+end
+
+local function release_rate_slot(rule_id)
+    local slot = rate_slots[rule_id]
+    if slot then rate_slots[rule_id], rate_slot_owner[slot] = nil, nil end
+end
+
+local function shell_ok(cmd)
+    local ok = os.execute(cmd .. " >/dev/null 2>&1")
+    return ok == true or ok == 0
+end
+
+local function get_wan_ifname()
+    local h = io.popen("ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null")
+    local name = h and (h:read("*l") or "") or ""
+    if h then h:close() end
+    return name:gsub("[^%w%._%-]", "")
+end
+
+local function tc_cleanup_rule(state)
+    if not state or not state.rate_slot then return end
+    local wan = get_wan_ifname()
+    local minor = 0x100 + state.rate_slot
+    if wan ~= "" then shell_ok(string.format("tc class del dev %s classid 1:%x", wan, minor)) end
+    shell_ok(string.format("tc class del dev oaf-ifb0 classid 1:%x", minor))
+    release_rate_slot(state.rule_id)
+    state.rate_slot = nil
+end
+
+local function tc_apply_rate(rule, state)
+    local up, down = tonumber(rule.upload_kbps) or 0, tonumber(rule.download_kbps) or 0
+    if up <= 0 and down <= 0 then tc_cleanup_rule(state); return true end
+    local slot = state.rate_slot or get_rate_slot(rule.id)
+    if not slot then log("ERROR: no free OAF shaping slot"); return false end
+    state.rate_slot, state.rule_id = slot, rule.id
+    local wan = get_wan_ifname()
+    if wan == "" then log("WARNING: WAN device unavailable; shaping deferred"); return false end
+    local minor, mark = 0x100 + slot, RATE_MARK_PREFIX + slot
+    -- Handle 1:/ffff: and IFB name are reserved by this package and cleaned on stop.
+    shell_ok("ip link add oaf-ifb0 type ifb")
+    shell_ok("ip link set oaf-ifb0 up")
+    shell_ok(string.format("tc qdisc replace dev %s root handle 1: htb default 1", wan))
+    shell_ok(string.format("tc class replace dev %s parent 1: classid 1:1 htb rate 1000mbit", wan))
+    shell_ok(string.format("tc qdisc replace dev %s ingress", wan))
+    shell_ok(string.format("tc filter replace dev %s parent ffff: protocol all prio 49152 matchall action mirred egress redirect dev oaf-ifb0", wan))
+    shell_ok("tc qdisc replace dev oaf-ifb0 root handle 1: htb default 1")
+    shell_ok("tc class replace dev oaf-ifb0 parent 1: classid 1:1 htb rate 1000mbit")
+    if up > 0 then
+        shell_ok(string.format("tc class replace dev %s parent 1:1 classid 1:%x htb rate %dkbit ceil %dkbit", wan, minor, up, up))
+        shell_ok(string.format("tc filter replace dev %s parent 1: protocol all prio %d handle 0x%x/0xffffffff fw flowid 1:%x", wan, 1000 + slot, mark, minor))
+    else shell_ok(string.format("tc filter del dev %s parent 1: prio %d", wan, 1000 + slot)) end
+    if down > 0 then
+        shell_ok(string.format("tc class replace dev oaf-ifb0 parent 1:1 classid 1:%x htb rate %dkbit ceil %dkbit", minor, down, down))
+        shell_ok(string.format("tc filter replace dev oaf-ifb0 parent 1: protocol all prio %d handle 0x%x/0xffffffff fw flowid 1:%x", 2000 + slot, mark, minor))
+    else shell_ok(string.format("tc filter del dev oaf-ifb0 parent 1: prio %d", 2000 + slot)) end
+    state.traffic_mark, state.upload_kbps, state.download_kbps = mark, up, down
+    return true
+end
+
+local function set_appfilter_rule_rate(rule, state)
+    local mark = state.traffic_mark or (RATE_MARK_PREFIX + (state.rate_slot or 0))
+    return write_to_dev_fwx(string.format('{"api":"mod_app_filter_rule","data":{"rule_id":%d,"traffic_mark":%d,"upload_kbps":%d,"download_kbps":%d}}', rule.id, mark, rule.upload_kbps or 0, rule.download_kbps or 0))
+end
+
 local function process_appfilter_rules(current_info)
     log(string.format("=== Processing AppFilter rules (time: %02d:%02d, weekday: %d) ===", 
         current_info.hour, current_info.min, current_info.weekday))
@@ -1180,6 +1263,20 @@ local function process_appfilter_rules(current_info)
     for _, rule in ipairs(rules) do
         rule_map[tonumber(rule.id) or 0] = rule
     end
+    -- Kernel matching uses the newest rule first.  Install looser rate rules first,
+    -- so the lowest configured non-zero rate (then lowest rule ID) wins overlaps.
+    table.sort(rules, function(a, b)
+        local function strictness(r)
+            local u, d = tonumber(r.upload_kbps) or 0, tonumber(r.download_kbps) or 0
+            if u == 0 and d == 0 then return -1 end
+            if u == 0 then return d end
+            if d == 0 then return u end
+            return math.min(u, d)
+        end
+        local sa, sb = strictness(a), strictness(b)
+        if sa == sb then return (tonumber(a.id) or 0) > (tonumber(b.id) or 0) end
+        return sa > sb
+    end)
     
     for _, rule in ipairs(rules) do
         local time_match = is_time_in_range(rule.time_rules, current_info)
@@ -1239,10 +1336,10 @@ local function process_appfilter_rules(current_info)
                     end
                 end
 
-                if not config_changed then
-                    if (tonumber(rule.filter_quic) or 0) ~= (tonumber(current_state.filter_quic) or 0) then
-                        config_changed = true
-                    end
+                if not config_changed and ((tonumber(rule.filter_quic) or 0) ~= (tonumber(current_state.filter_quic) or 0) or
+                    (tonumber(rule.upload_kbps) or 0) ~= (tonumber(current_state.upload_kbps) or 0) or
+                    (tonumber(rule.download_kbps) or 0) ~= (tonumber(current_state.download_kbps) or 0)) then
+                    config_changed = true
                 end
             end
             
@@ -1270,6 +1367,11 @@ local function process_appfilter_rules(current_info)
                     if set_appfilter_rule_filter_quic(rule.id, rule.filter_quic) then
                         appfilter_rules_state[rule.id].filter_quic = tonumber(rule.filter_quic) or 0
                     end
+                    if tc_apply_rate(rule, appfilter_rules_state[rule.id]) then
+                        set_appfilter_rule_rate(rule, appfilter_rules_state[rule.id])
+                    end
+                    appfilter_rules_state[rule.id].upload_kbps = tonumber(rule.upload_kbps) or 0
+                    appfilter_rules_state[rule.id].download_kbps = tonumber(rule.download_kbps) or 0
                     
                     appfilter_rules_state[rule.id].active = true
                     appfilter_rules_state[rule.id].name = rule.name
@@ -1285,6 +1387,7 @@ local function process_appfilter_rules(current_info)
                 log(string.format("AppFilter rule %d (%s): deactivating (enabled=%d, time_match=%s)", 
                     rule.id, rule.name, rule.enabled, tostring(time_match)))
                 if delete_appfilter_rule(rule.id) then
+                    tc_cleanup_rule(appfilter_rules_state[rule.id])
                     appfilter_rules_state[rule.id].active = false
                     log(string.format("AppFilter rule %d: deactivated", rule.id))
                 end
@@ -1304,6 +1407,7 @@ local function process_appfilter_rules(current_info)
             if state.active then
                 log(string.format("AppFilter rule %d: removed from UCI, deleting", rule_id))
                 if delete_appfilter_rule(rule_id) then
+                    tc_cleanup_rule(state)
                     appfilter_rules_state[rule_id] = nil
                 end
             else

@@ -1959,3 +1959,18 @@ msgstr "无效的Key，请通过官网获取正确的Key，并开通高级版特
 
 msgid "No data"
 msgstr "暂无数据"
+
+msgid "Upload Limit (Kbps)"
+msgstr "上传限速 (Kbps)"
+
+msgid "Download Limit (Kbps)"
+msgstr "下载限速 (Kbps)"
+
+msgid "0 means unlimited. When multiple active rate rules match traffic, the most restrictive rule is used."
+msgstr "0 表示不限速。多条生效限速规则匹配同一流量时，使用最严格的规则。"
+
+msgid "When multiple active rate rules match traffic, the most restrictive rule is used."
+msgstr "多条生效限速规则匹配同一流量时，使用最严格的规则。"
+
+msgid "Rate must be a non-negative integer no greater than 10000000 Kbps."
+msgstr "速率必须是非负整数，且不超过 10000000 Kbps。"
