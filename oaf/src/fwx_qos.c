@@ -69,6 +69,8 @@ static int fwx_qos_parse_line(char *line, struct fwx_qos_rule *out)
 	p = strim(line);
 	if (!*p || *p == '#')
 		return 1;
+	if (!strcmp(p, "clear"))
+		return 2;
 
 	if (sscanf(p, "%u %u %17s", &class_id, &app_id, mac_buf) != 3)
 		return -EINVAL;
@@ -117,20 +119,26 @@ static ssize_t fwx_qos_proc_write(struct file *file, const char __user *buf,
 
 	cursor = input;
 	while ((line = strsep(&cursor, "\n")) != NULL) {
+		if (new_count >= FWX_QOS_MAX_RULES) {
+			kfree(new_rules);
+			kfree(input);
+			return -ENOSPC;
+		}
+
 		ret = fwx_qos_parse_line(line, &new_rules[new_count]);
 		if (ret == 1)
 			continue;
+		if (ret == 2) {
+			new_count = 0;
+			continue;
+		}
 		if (ret < 0) {
 			pr_err("oaf_qos: invalid rule line: %s\n", line);
 			kfree(new_rules);
 			kfree(input);
 			return ret;
 		}
-		if (++new_count >= FWX_QOS_MAX_RULES && cursor && *cursor) {
-			kfree(new_rules);
-			kfree(input);
-			return -ENOSPC;
-		}
+		new_count++;
 	}
 
 	spin_lock_bh(&g_qos_lock);
