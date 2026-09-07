@@ -6,8 +6,7 @@ s = m:section(NamedSection, "global", "global", translate("QoS service"))
 s.anonymous = true
 
 o = s:option(Flag, "enabled", translate("Enable QoS"))
-o.default = o.disabled
-
+o.default = "0"
 o.rmempty = false
 
 s = m:section(TypedSection, "rule", translate("QoS rules"))
@@ -24,9 +23,24 @@ local function validate_positive(section, value)
 	return value
 end
 
-o = s:option(Flag, "enabled", translate("Enable"))
-o.default = o.enabled
+local function validate_app_id(section, value)
+	value = tostring(value or "")
+	if value:match("^%d+$") then
+		local n = tonumber(value)
+		if n and n > 0 and n <= 32000 then return value end
+	end
+	local a, b = value:match("^(%d+)%-(%d+)$")
+	if a and b then
+		a, b = tonumber(a), tonumber(b)
+		if a and b and a > 0 and b <= 32000 and math.abs(b - a) <= 2048 then
+			return value
+		end
+	end
+	return nil, translate("Enter an application ID or range such as 1001-1009.")
+end
 
+o = s:option(Flag, "enabled", translate("Enable"))
+o.default = "1"
 o.rmempty = false
 
 o = s:option(Value, "name", translate("Name"))
@@ -48,13 +62,13 @@ o:depends("mode", "2")
 o.datatype = "macaddr"
 
 o = s:option(DynamicList, "app_id", translate("Application ID"))
-o.description = translate("Enter application IDs or ranges, e.g. 1001 or 1001-1009.")
-o.datatype = "uinteger"
+o.description = translate("Enter IDs or ranges, e.g. 1001 or 1001-1009.")
+o.validate = validate_app_id
 
 o = s:option(DynamicList, "time_rule", translate("Time windows"))
 o.description = translate("Example: 1,2,3,18:00,22:00. Weekday 0=Sunday, 6=Saturday. Overnight windows are supported.")
 
--- Keep the two directions explicit; 0 is rejected by the runtime because a usable rule needs download > 0.
+-- 0 is accepted here so a direction can intentionally be left unshaped; the runtime still requires download > 0.
 o = s:option(Value, "download_kbps", translate("Download (Kbit/s)"))
 o.default = "1024"
 o.datatype = "uinteger"
