@@ -5,19 +5,19 @@ include $(INCLUDE_DIR)/kernel.mk
 PKG_NAME:=oaf
 include $(INCLUDE_DIR)/package.mk
 
-PKG_AUTOLOAD:=oaf
+PKG_AUTOLOAD:=oaf oaf_qos
 RSTRIP:=:
 
 define KernelPackage/oaf
   SUBMENU:=Netfilter Extensions
-  TITLE:=OAF netfilter module
-  FILES:=$(PKG_BUILD_DIR)/oaf.ko 
+  TITLE:=OpenAppFilter netfilter modules
+  FILES:=$(PKG_BUILD_DIR)/oaf.ko $(PKG_BUILD_DIR)/oaf_qos.ko
   DEPENDS:=+kmod-ipt-conntrack
   KCONFIG:=
 endef
 
 define KernelPackage/oaf/description
-  oaf netfilter module 
+  OpenAppFilter application filter and per-application QoS classifier
 endef
 
 KCFLAGS := -Wno-error=missing-prototypes \
@@ -29,7 +29,6 @@ KCFLAGS := -Wno-error=missing-prototypes \
            -Wno-error=parentheses \
            -Wno-error=format \
            -Wno-frame-larger-than
-
 
 MAKE_OPTS:= \
 	$(KERNEL_MAKE_FLAGS) \
@@ -44,4 +43,3 @@ define Build/Compile
 endef
 
 $(eval $(call KernelPackage,oaf))
-
