@@ -4,6 +4,8 @@ set -u
 
 TC=/sbin/tc
 STATE=/tmp/oaf_qos_tc_state
+LAN_PREV=/tmp/oaf_qos_prev_lan_qdisc
+WAN_PREV=/tmp/oaf_qos_prev_wan_qdisc
 OUR_ROOT_RE='qdisc[[:space:]]+htb[[:space:]]+1:[[:space:]]+root'
 SAFE_ROOT_RE='qdisc[[:space:]]+\(fq_codel\|fq\|pfifo_fast\|pfifo\|noqueue\)'
 
@@ -34,6 +36,37 @@ is_safe_default() {
     "$TC" qdisc show dev "$1" 2>/dev/null | grep -Eq "$SAFE_ROOT_RE"
 }
 
+save_previous_qdisc() {
+    local dev="$1"
+    local file="$2"
+    local root_type
+    [ -n "$dev" ] || return 0
+    [ -e "$file" ] && return 0
+    root_type="$($TC qdisc show dev "$dev" 2>/dev/null | sed -n 's/.*root[[:space:]]\+\([^[:space:]]*\).*/\1/p' | head -n 1)"
+    case "$root_type" in
+        fq_codel|fq|pfifo_fast|pfifo|noqueue)
+            printf '%s' "$root_type" > "$file"
+            ;;
+        *)
+            :
+            ;;
+    esac
+}
+
+restore_qdisc() {
+    local dev="$1"
+    local file="$2"
+    local root_type
+    [ -n "$dev" ] || return 0
+    [ -f "$file" ] || return 0
+    root_type="$(cat "$file" 2>/dev/null || true)"
+    [ -n "$root_type" ] || return 0
+    if ! has_root "$dev"; then
+        "$TC" qdisc add dev "$dev" root "$root_type" 2>/dev/null || log "failed to restore $root_type on $dev"
+    fi
+    rm -f "$file"
+}
+
 remove_ours() {
     local dev="$1"
     if is_ours "$dev"; then
@@ -45,7 +78,8 @@ setup_device() {
     local dev="$1"
     local rate_lines="$2"
     local direction="$3"
-    local profile class down up rate
+    local prev_file="$4"
+    local profile down up rate
     [ -n "$dev" ] || return 0
 
     if has_root "$dev" && ! is_ours "$dev"; then
@@ -53,6 +87,7 @@ setup_device() {
             log "refusing to replace non-default qdisc on $dev"
             return 2
         fi
+        save_previous_qdisc "$dev" "$prev_file"
     fi
 
     remove_ours "$dev"
@@ -91,17 +126,19 @@ apply() {
     local lan_dev wan_dev
     [ -f "$rules_file" ] && rules_data="$(cat "$rules_file")"
 
-    if [ -r "$STATE" ] && [ "$(cat "$STATE" 2>/dev/null)" = "${rules_data}" ]; then
-        exit 0
-    fi
-
     lan_dev="$(get_device lan)"
     wan_dev="$(get_device wan)"
+
+    if [ -r "$STATE" ] && [ "$(cat "$STATE" 2>/dev/null)" = "${rules_data}" ] && is_ours "$lan_dev" && is_ours "$wan_dev"; then
+        exit 0
+    fi
 
     if [ -z "$rules_data" ]; then
         remove_ours "$lan_dev"
         remove_ours "$wan_dev"
-        printf '%s' "$rules_data" > "$STATE"
+        restore_qdisc "$lan_dev" "$LAN_PREV"
+        restore_qdisc "$wan_dev" "$WAN_PREV"
+        rm -f "$STATE"
         exit 0
     fi
 
@@ -110,13 +147,16 @@ apply() {
         exit 1
     fi
 
-    if ! setup_device "$wan_dev" "$rules_data" up; then
+    if ! setup_device "$wan_dev" "$rules_data" up "$WAN_PREV"; then
         remove_ours "$wan_dev"
+        restore_qdisc "$wan_dev" "$WAN_PREV"
         exit 1
     fi
-    if ! setup_device "$lan_dev" "$rules_data" down; then
+    if ! setup_device "$lan_dev" "$rules_data" down "$LAN_PREV"; then
         remove_ours "$wan_dev"
         remove_ours "$lan_dev"
+        restore_qdisc "$wan_dev" "$WAN_PREV"
+        restore_qdisc "$lan_dev" "$LAN_PREV"
         exit 1
     fi
 
@@ -130,6 +170,8 @@ case "${1:-}" in
     clear)
         remove_ours "$(get_device lan)"
         remove_ours "$(get_device wan)"
+        restore_qdisc "$(get_device lan)" "$LAN_PREV"
+        restore_qdisc "$(get_device wan)" "$WAN_PREV"
         rm -f "$STATE"
         ;;
     *)
