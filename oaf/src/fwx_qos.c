@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * OpenAppFilter per-application QoS classifier.
- * The rule manager supplies the currently active time-window rules via procfs.
- * This file only classifies packets; traffic shaping is left to tc.
+ *
+ * The existing OAF module identifies applications and stores the app id in
+ * conntrack mark bits 0..15. This module consumes that state and assigns a
+ * dedicated QoS class to skb->mark. Actual rate limiting is performed by tc.
+ *
+ * PREROUTING classifies LAN-originated traffic by source MAC, while
+ * POSTROUTING classifies WAN-originated traffic by destination MAC.
  */
-#include <linux/ctype.h>
 #include <linux/etherdevice.h>
 #include <linux/fs.h>
-#include <linux/ip.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/netfilter.h>
@@ -16,18 +19,12 @@
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
 #include <linux/uaccess.h>
-#include <linux/ipv6.h>
-#include <net/ip.h>
-#include <net/ipv6.h>
+#include <linux/if_ether.h>
 #include <net/netfilter/nf_conntrack.h>
 
-#include "fwx.h"
-#include "fwx_client.h"
 #include "fwx_qos.h"
-#include "fwx_log.h"
 
 #define FWX_QOS_PROC_NAME "oaf_qos_rules"
-#define FWX_QOS_LINE_MAX 96
 
 static struct fwx_qos_rule g_qos_rules[FWX_QOS_MAX_RULES];
 static unsigned int g_qos_rule_count;
@@ -99,6 +96,7 @@ static ssize_t fwx_qos_proc_write(struct file *file, const char __user *buf,
 	char *input;
 	char *cursor;
 	char *line;
+	struct fwx_qos_rule *new_rules;
 	unsigned int new_count = 0;
 	int ret;
 
@@ -111,31 +109,38 @@ static ssize_t fwx_qos_proc_write(struct file *file, const char __user *buf,
 	if (IS_ERR(input))
 		return PTR_ERR(input);
 
+	new_rules = kcalloc(FWX_QOS_MAX_RULES, sizeof(*new_rules), GFP_KERNEL);
+	if (!new_rules) {
+		kfree(input);
+		return -ENOMEM;
+	}
+
 	cursor = input;
 	while ((line = strsep(&cursor, "\n")) != NULL) {
-		struct fwx_qos_rule parsed;
-
-		ret = fwx_qos_parse_line(line, &parsed);
+		ret = fwx_qos_parse_line(line, &new_rules[new_count]);
 		if (ret == 1)
 			continue;
 		if (ret < 0) {
-			AF_ERROR("QoS: invalid rule line: %s\n", line);
+			pr_err("oaf_qos: invalid rule line: %s\n", line);
+			kfree(new_rules);
 			kfree(input);
 			return ret;
 		}
-		if (new_count >= FWX_QOS_MAX_RULES) {
+		if (++new_count >= FWX_QOS_MAX_RULES && cursor && *cursor) {
+			kfree(new_rules);
 			kfree(input);
 			return -ENOSPC;
 		}
-		g_qos_rules[new_count++] = parsed;
 	}
 
 	spin_lock_bh(&g_qos_lock);
+	memcpy(g_qos_rules, new_rules, new_count * sizeof(*new_rules));
 	g_qos_rule_count = new_count;
 	spin_unlock_bh(&g_qos_lock);
 
+	kfree(new_rules);
 	kfree(input);
-	AF_INFO("QoS: loaded %u active classifiers\n", new_count);
+	pr_info("oaf_qos: loaded %u active classifiers\n", new_count);
 	return count;
 }
 
@@ -143,58 +148,21 @@ static const struct proc_ops fwx_qos_proc_ops = {
 	.proc_write = fwx_qos_proc_write,
 };
 
-static int fwx_qos_client_mac_from_skb(struct sk_buff *skb, u8 *mac)
-{
-	const struct iphdr *iph;
-	const struct ipv6hdr *ip6h;
-	af_client_info_t *client = NULL;
-
-	if (!skb || !mac)
-		return -EINVAL;
-
-	if (skb->protocol == htons(ETH_P_IP)) {
-		iph = ip_hdr(skb);
-		if (!iph)
-			return -ENOENT;
-
-		AF_CLIENT_LOCK_R();
-		client = find_af_client_by_ip(iph->saddr);
-		if (!client)
-			client = find_af_client_by_ip(iph->daddr);
-		if (client)
-			ether_addr_copy(mac, client->mac);
-		AF_CLIENT_UNLOCK_R();
-	} else if (skb->protocol == htons(ETH_P_IPV6)) {
-		ip6h = ipv6_hdr(skb);
-		if (!ip6h)
-			return -ENOENT;
-
-		AF_CLIENT_LOCK_R();
-		client = find_af_client_by_ipv6((struct in6_addr *)&ip6h->saddr);
-		if (!client)
-			client = find_af_client_by_ipv6((struct in6_addr *)&ip6h->daddr);
-		if (client)
-			ether_addr_copy(mac, client->mac);
-		AF_CLIENT_UNLOCK_R();
-	}
-
-	return client ? 0 : -ENOENT;
-}
-
 static u16 fwx_qos_lookup_class(u32 app_id, const u8 *mac)
 {
 	unsigned int i;
 	u16 class_id = 0;
 
-	if (!app_id || !mac)
+	if (!app_id)
 		return 0;
 
 	spin_lock_bh(&g_qos_lock);
 	for (i = 0; i < g_qos_rule_count; i++) {
 		const struct fwx_qos_rule *rule = &g_qos_rules[i];
+
 		if (rule->app_id != app_id)
 			continue;
-		if (!rule->any_mac && !ether_addr_equal(rule->mac, mac))
+		if (!rule->any_mac && (!mac || !ether_addr_equal(rule->mac, mac)))
 			continue;
 		class_id = rule->class_id;
 		break;
@@ -203,15 +171,13 @@ static u16 fwx_qos_lookup_class(u32 app_id, const u8 *mac)
 	return class_id;
 }
 
-static unsigned int fwx_qos_hook(void *priv, struct sk_buff *skb,
-					 const struct nf_hook_state *state)
+static unsigned int fwx_qos_apply(struct sk_buff *skb, const u8 *client_mac)
 {
 	enum ip_conntrack_info ctinfo;
 	struct nf_conn *ct;
 	u32 app_id;
-	u32 mark;
-	u8 client_mac[ETH_ALEN];
 	u16 class_id;
+	u32 mark;
 
 	if (!skb)
 		return NF_ACCEPT;
@@ -224,49 +190,80 @@ static unsigned int fwx_qos_hook(void *priv, struct sk_buff *skb,
 	if (app_id == 0 || app_id > 32000)
 		return NF_ACCEPT;
 
-	memset(client_mac, 0, sizeof(client_mac));
-	if (fwx_qos_client_mac_from_skb(skb, client_mac) < 0)
+	class_id = fwx_qos_lookup_class(app_id, client_mac);
+	if (!class_id)
 		return NF_ACCEPT;
 
-	class_id = fwx_qos_lookup_class(app_id, client_mac);
 	mark = skb->mark & ~FWX_QOS_SKB_MARK_MASK;
-	if (class_id)
-		mark |= fwx_qos_mark_encode(class_id);
-	skb->mark = mark;
-
+	skb->mark = mark | fwx_qos_mark_encode(class_id);
 	return NF_ACCEPT;
 }
 
-static struct nf_hook_ops fwx_qos_ops __read_mostly = {
-	.hook = fwx_qos_hook,
-	.pf = NFPROTO_INET,
-	.hooknum = NF_INET_PRE_ROUTING,
-	.priority = NF_IP_PRI_CONNTRACK + 2,
+static unsigned int fwx_qos_prerouting(void *priv, struct sk_buff *skb,
+					       const struct nf_hook_state *state)
+{
+	const struct ethhdr *eth;
+
+	if (!skb)
+		return NF_ACCEPT;
+	eth = eth_hdr(skb);
+	return fwx_qos_apply(skb, eth ? eth->h_source : NULL);
+}
+
+static unsigned int fwx_qos_postrouting(void *priv, struct sk_buff *skb,
+						const struct nf_hook_state *state)
+{
+	const struct ethhdr *eth;
+
+	if (!skb)
+		return NF_ACCEPT;
+	eth = eth_hdr(skb);
+	return fwx_qos_apply(skb, eth ? eth->h_dest : NULL);
+}
+
+static struct nf_hook_ops fwx_qos_ops[] __read_mostly = {
+	{
+		.hook = fwx_qos_prerouting,
+		.pf = NFPROTO_INET,
+		.hooknum = NF_INET_PRE_ROUTING,
+		.priority = NF_IP_PRI_CONNTRACK + 2,
+	},
+	{
+		.hook = fwx_qos_postrouting,
+		.pf = NFPROTO_INET,
+		.hooknum = NF_INET_POST_ROUTING,
+		.priority = NF_IP_PRI_CONNTRACK + 2,
+	},
 };
 
-int fwx_qos_init(void)
+static int __init fwx_qos_init(void)
 {
+	int ret;
+
 	g_qos_rule_count = 0;
 	g_qos_proc = proc_create(FWX_QOS_PROC_NAME, 0200, NULL, &fwx_qos_proc_ops);
 	if (!g_qos_proc) {
-		AF_ERROR("QoS: failed to create /proc/%s\n", FWX_QOS_PROC_NAME);
+		pr_err("oaf_qos: failed to create /proc/%s\n", FWX_QOS_PROC_NAME);
 		return -ENOMEM;
 	}
 
-	if (nf_register_net_hook(&init_net, &fwx_qos_ops)) {
+	ret = nf_register_net_hooks(&init_net, fwx_qos_ops,
+					ARRAY_SIZE(fwx_qos_ops));
+	if (ret) {
 		proc_remove(g_qos_proc);
 		g_qos_proc = NULL;
-		AF_ERROR("QoS: failed to register netfilter hook\n");
-		return -EINVAL;
+		pr_err("oaf_qos: failed to register netfilter hooks: %d\n", ret);
+		return ret;
 	}
 
-	AF_INFO("QoS: classifier initialized\n");
+	pr_info("oaf_qos: classifier initialized\n");
 	return 0;
 }
 
-void fwx_qos_exit(void)
+static void __exit fwx_qos_exit(void)
 {
-	nf_unregister_net_hook(&init_net, &fwx_qos_ops);
+	nf_unregister_net_hooks(&init_net, fwx_qos_ops,
+				ARRAY_SIZE(fwx_qos_ops));
 	if (g_qos_proc) {
 		proc_remove(g_qos_proc);
 		g_qos_proc = NULL;
@@ -274,7 +271,7 @@ void fwx_qos_exit(void)
 	spin_lock_bh(&g_qos_lock);
 	g_qos_rule_count = 0;
 	spin_unlock_bh(&g_qos_lock);
-	AF_INFO("QoS: classifier exited\n");
+	pr_info("oaf_qos: classifier exited\n");
 }
 
 module_init(fwx_qos_init);
