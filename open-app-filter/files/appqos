@@ -1,0 +1,7 @@
+config global 'global'
+	option enabled '0'
+
+# QoS rules use the same weekday/time notation as AppFilter:
+# list time_rule '1,2,3,18:00,22:00'
+# mode 1 = all clients, mode 2 = one client MAC
+# download/upload are in Kbit/s.
