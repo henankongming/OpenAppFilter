@@ -119,6 +119,12 @@ static ssize_t fwx_qos_proc_write(struct file *file, const char __user *buf,
 
 	cursor = input;
 	while ((line = strsep(&cursor, "\n")) != NULL) {
+		if (!strcmp(strim(line), "clear")) {
+			new_count = 0;
+			continue;
+		}
+		if (!*strim(line) || *strim(line) == '#')
+			continue;
 		if (new_count >= FWX_QOS_MAX_RULES) {
 			kfree(new_rules);
 			kfree(input);
@@ -126,19 +132,14 @@ static ssize_t fwx_qos_proc_write(struct file *file, const char __user *buf,
 		}
 
 		ret = fwx_qos_parse_line(line, &new_rules[new_count]);
-		if (ret == 1)
-			continue;
-		if (ret == 2) {
-			new_count = 0;
-			continue;
-		}
 		if (ret < 0) {
 			pr_err("oaf_qos: invalid rule line: %s\n", line);
 			kfree(new_rules);
 			kfree(input);
 			return ret;
 		}
-		new_count++;
+		if (ret == 0)
+			new_count++;
 	}
 
 	spin_lock_bh(&g_qos_lock);
@@ -234,13 +235,13 @@ static struct nf_hook_ops fwx_qos_ops[] __read_mostly = {
 		.hook = fwx_qos_prerouting,
 		.pf = NFPROTO_INET,
 		.hooknum = NF_INET_PRE_ROUTING,
-		.priority = NF_IP_PRI_CONNTRACK + 2,
+		.priority = NF_IP_PRI_LAST,
 	},
 	{
 		.hook = fwx_qos_postrouting,
 		.pf = NFPROTO_INET,
 		.hooknum = NF_INET_POST_ROUTING,
-		.priority = NF_IP_PRI_CONNTRACK + 2,
+		.priority = NF_IP_PRI_LAST,
 	},
 };
 
