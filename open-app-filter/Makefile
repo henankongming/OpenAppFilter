@@ -51,7 +51,6 @@ define Package/appfilter/install
 	$(INSTALL_DATA) ./files/feature.bin $(1)/etc/fwxd/feature.bin
 	$(INSTALL_DATA) ./files/custom_feature.cfg $(1)/etc/fwxd/custom_feature.cfg
 	$(INSTALL_BIN) ./files/appfilter.init $(1)/etc/init.d/appfilter
-	$(INSTALL_BIN) ./files/oaf-qos.init $(1)/etc/init.d/oaf-qos
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/oafd $(1)/usr/bin
 	$(INSTALL_BIN) ./files/rule_manager.lua $(1)/usr/bin/rule_manager
 	$(INSTALL_BIN) ./files/oaf-qos-manager.lua $(1)/usr/bin/oaf-qos-manager
