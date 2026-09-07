@@ -8,6 +8,20 @@ FWXD_BIN="/usr/bin/oafd"
 CUSTOM_FEATURE_FILE="/etc/fwxd/custom_feature.cfg"
 LEGACY_CUSTOM_FEATURE_FILE="/etc/custom_feature.cfg"
 
+supported_openwrt()
+{
+	. /etc/openwrt_release 2>/dev/null || return 1
+	[ "${DISTRIB_RELEASE:-}" = "SNAPSHOT" ] && return 0
+	case "${DISTRIB_RELEASE:-}" in
+		25.12.*)
+			local minor="${DISTRIB_RELEASE#25.12.}"
+			[ "${minor%%.*}" -ge 5 ] 2>/dev/null
+			return $?
+			;;
+	esac
+	return 1
+}
+
 ensure_config_file()
 {
 	local file="$1"
@@ -83,6 +97,11 @@ stop_service(){
 }
 
 start_service(){
+	if ! supported_openwrt; then
+		echo "OpenAppFilter requires OpenWrt 25.12.5 or newer" >&2
+		return 1
+	fi
+
 	ensure_default_configs
 
 	if ! lsmod | grep -q "^oaf[[:space:]]"; then
