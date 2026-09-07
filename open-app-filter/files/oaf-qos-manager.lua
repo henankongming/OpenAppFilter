@@ -29,23 +29,15 @@ end
 
 local function normalize_mac(value)
     local mac = trim(value):upper()
-    if mac:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$") then
-        return mac
-    end
+    if mac:match("^%x%x:%x%x:%x%x:%x%x:%x%x:%x%x$") then return mac end
     return nil
 end
 
 local function parse_time_rule(value)
-    local weekdays = {}
-    local start_time
-    local end_time
+    local weekdays, start_time, end_time = {}, nil, nil
     if not value or value == "" then return nil end
-
-    local parts = {}
     for token in tostring(value):gmatch("[^,]+") do
-        table.insert(parts, trim(token))
-    end
-    for _, token in ipairs(parts) do
+        token = trim(token)
         if token:match("^%d%d?:%d%d$") then
             if not start_time then start_time = token else end_time = token end
         else
@@ -67,8 +59,7 @@ end
 local function schedule_active(time_rules, current_wd, current_min)
     for _, rule in ipairs(time_rules or {}) do
         if rule.weekdays[current_wd] then
-            local start_min = minutes(rule.start_time)
-            local end_min = minutes(rule.end_time)
+            local start_min, end_min = minutes(rule.start_time), minutes(rule.end_time)
             if start_min and end_min then
                 if start_min == end_min then
                     return true
@@ -96,7 +87,6 @@ local function parse_app_token(token)
         for id = a, b do table.insert(ids, id) end
         return ids
     end
-
     local app_id = tonumber(token)
     if app_id and app_id > 0 and app_id <= MAX_APP_ID then return { app_id } end
     return nil, "invalid application id"
@@ -111,27 +101,23 @@ end
 
 local function load_source_appfilter_rule(cursor, source_id)
     if not source_id or source_id <= 0 then return nil end
-    local found = nil
+    local found
     cursor:foreach("appfilter", "rule", function(section)
         if tonumber(section.id) == source_id and not found then
-            local apps = {}
+            local apps, time_rules = {}, {}
             for _, raw in ipairs(list_values(section, "app_id")) do
                 local ids, err = parse_app_token(raw)
                 if ids then
                     for _, id in ipairs(ids) do table.insert(apps, id) end
                 else
-                    log("invalid app id in AppFilter rule " .. tostring(source_id) .. ": " .. tostring(err))
+                    log("invalid AppFilter app token in rule " .. source_id .. ": " .. tostring(err))
                 end
             end
-
-            local time_rules = {}
             for _, raw in ipairs(list_values(section, "time_rule")) do
                 local parsed = parse_time_rule(raw)
                 if parsed then table.insert(time_rules, parsed) end
             end
-
             found = {
-                source_rule_id = source_id,
                 source_enabled = (tonumber(section.enabled) or 1) == 1,
                 mode = tonumber(section.mode) or 1,
                 mac = normalize_mac(section.user_mac),
@@ -156,23 +142,19 @@ local function load_rules(current_wd, current_min)
 
         local mode = tonumber(section.mode) or 1
         local mac = normalize_mac(section.user_mac)
-        local apps = {}
-        local time_rules = {}
+        local apps, time_rules = {}, {}
 
         if source_id > 0 then
             local source = load_source_appfilter_rule(cursor, source_id)
             if not source or not source.source_enabled then return end
-            mode = source.mode
-            mac = source.mac
-            apps = source.apps
-            time_rules = source.time_rules
+            mode, mac, apps, time_rules = source.mode, source.mac, source.apps, source.time_rules
         else
             for _, raw in ipairs(list_values(section, "app_id")) do
                 local ids, err = parse_app_token(raw)
                 if ids then
                     for _, id in ipairs(ids) do table.insert(apps, id) end
                 else
-                    log("invalid app token in QoS rule " .. tostring(section[".name"]) .. ": " .. tostring(err))
+                    log("invalid QoS app token in rule " .. tostring(section[".name"]) .. ": " .. tostring(err))
                 end
             end
             for _, raw in ipairs(list_values(section, "time_rule")) do
@@ -189,7 +171,6 @@ local function load_rules(current_wd, current_min)
 
         table.insert(rules, {
             section_id = tostring(section[".name"] or ""),
-            source_rule_id = source_id,
             priority = tonumber(section.priority) or 100,
             mode = mode,
             mac = mac,
@@ -209,8 +190,7 @@ local function load_rules(current_wd, current_min)
 end
 
 local function assign_classes(rules)
-    local profile_to_class = {}
-    local next_class = 2
+    local profile_to_class, next_class = {}, 2
     for _, rule in ipairs(rules) do
         local key = tostring(rule.down) .. ":" .. tostring(rule.up)
         if not profile_to_class[key] then
@@ -275,8 +255,7 @@ local function write_file(path, data)
     if not fd then return false end
     fd:write(data)
     fd:close()
-    os.rename(tmp, path)
-    return true
+    return os.rename(tmp, path) ~= nil
 end
 
 local function apply_kernel_rules(data)
@@ -286,15 +265,13 @@ local function apply_kernel_rules(data)
         log("QoS procfs is unavailable: " .. PROC_FILE)
         return false
     end
-    fd:write(data)
+    local written = fd:write(data)
     fd:close()
+    if not written then return false end
     return write_file(KERNEL_STATE, data)
 end
 
 local function apply_tc(data)
-    if read_file(TC_RULE_FILE) == data and data ~= "" then
-        return os.execute("/usr/bin/oaf-qos.sh apply " .. TC_RULE_FILE) == true
-    end
     if not write_file(TC_RULE_FILE, data) then return false end
     local result = os.execute("/usr/bin/oaf-qos.sh apply " .. TC_RULE_FILE)
     return result == true or result == 0
