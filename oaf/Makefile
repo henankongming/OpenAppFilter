@@ -1,17 +1,16 @@
-
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=oaf
 include $(INCLUDE_DIR)/package.mk
 
-PKG_AUTOLOAD:=oaf oaf_qos
 RSTRIP:=:
 
 define KernelPackage/oaf
   SUBMENU:=Netfilter Extensions
   TITLE:=OpenAppFilter netfilter modules
   FILES:=$(PKG_BUILD_DIR)/oaf.ko $(PKG_BUILD_DIR)/oaf_qos.ko
+  AUTOLOAD:=$(call AutoLoad,90,oaf oaf_qos)
   DEPENDS:=+kmod-ipt-conntrack
   KCONFIG:=
 endef
