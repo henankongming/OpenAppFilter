@@ -18,7 +18,4 @@ struct fwx_qos_rule {
 	u8 mac[6];
 };
 
-int fwx_qos_init(void);
-void fwx_qos_exit(void);
-
 #endif
