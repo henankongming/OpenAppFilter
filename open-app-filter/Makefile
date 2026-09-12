@@ -12,7 +12,7 @@ TARGET_CFLAGS +=-Werror=implicit-function-declaration
 define Package/appfilter
   SECTION:=Base system
   CATEGORY:=Base system
-  DEPENDS:=+libubox +libubus +libuci +libpthread +libjson-c +libblobmsg-json +libuci-lua +libsqlite3 +libcurl +tc-tiny +kmod-sched-core
+  DEPENDS:=+libubox +libubus +libuci +libpthread +libjson-c +libblobmsg-json +libuci-lua +libsqlite3 +libcurl +tc +kmod-sched-core
   TITLE:=OAF service
 endef
 
