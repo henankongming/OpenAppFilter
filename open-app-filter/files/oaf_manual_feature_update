@@ -1,0 +1,98 @@
+#!/bin/sh
+
+set -eu
+
+ARCHIVE="$1"
+WORK_ROOT="/tmp/oaf_manual_feature"
+ARCHIVE_MAX=$((20 * 1024 * 1024))
+FEATURE_MAX=$((20 * 1024 * 1024))
+FEATURE_TARGET="/etc/fwxd/feature.bin"
+FEATURE_BACKUP="/etc/fwxd/feature.bin.bak"
+ICON_TARGET="/www/luci-static/resources/oaf/app_icons"
+
+fail()
+{
+    echo "ERROR:$*"
+    exit 1
+}
+
+[ -f "$ARCHIVE" ] || fail "upload file not found"
+[ -r "$ARCHIVE" ] || fail "upload file is not readable"
+
+size=$(stat -c '%s' "$ARCHIVE" 2>/dev/null || stat -f '%z' "$ARCHIVE" 2>/dev/null || echo 0)
+case "$size" in
+    ''|*[!0-9]*) fail "unable to determine upload size" ;;
+esac
+[ "$size" -gt 0 ] || fail "empty upload file"
+[ "$size" -le "$ARCHIVE_MAX" ] || fail "feature package is too large"
+
+rm -rf "$WORK_ROOT"
+mkdir -p "$WORK_ROOT/extract"
+trap 'rm -rf "$WORK_ROOT"' EXIT
+
+# The official online package is a gzip-compressed tar archive.
+# Reject absolute paths and parent-directory traversal before extraction.
+if ! tar -ztf "$ARCHIVE" > "$WORK_ROOT/list" 2>/dev/null; then
+    fail "invalid feature package: expected gzip tar archive"
+fi
+
+while IFS= read -r entry; do
+    case "$entry" in
+        /*|../*|*/../*|..)
+            fail "invalid archive path"
+            ;;
+        feature.bin|./feature.bin|app_icons|app_icons/*|./app_icons|./app_icons/*)
+            ;;
+        *)
+            fail "unsupported archive entry: $entry"
+            ;;
+    esac
+done < "$WORK_ROOT/list"
+
+if ! grep -Eq '^(\./)?feature\.bin$' "$WORK_ROOT/list"; then
+    fail "feature.bin not found in package"
+fi
+
+if ! tar -zxf "$ARCHIVE" -C "$WORK_ROOT/extract" >/dev/null 2>&1; then
+    fail "failed to extract feature package"
+fi
+
+FEATURE_SOURCE="$WORK_ROOT/extract/feature.bin"
+[ -f "$FEATURE_SOURCE" ] || fail "extracted feature.bin not found"
+
+feature_size=$(stat -c '%s' "$FEATURE_SOURCE" 2>/dev/null || stat -f '%z' "$FEATURE_SOURCE" 2>/dev/null || echo 0)
+case "$feature_size" in
+    ''|*[!0-9]*) fail "unable to determine feature.bin size" ;;
+esac
+[ "$feature_size" -ge 25 ] || fail "feature.bin is too small"
+[ "$feature_size" -le $((FEATURE_MAX + 24)) ] || fail "feature.bin is too large"
+
+# Match the FWXB container header used by fwx_feature.c:
+# magic=FWXB, version=1, algorithm=XTEA-CTR, header size=24.
+header=$(od -An -tx1 -N8 "$FEATURE_SOURCE" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//')
+[ "$header" = "46 57 58 42 01 01 18 00" ] || fail "invalid feature.bin format"
+
+mkdir -p /etc/fwxd
+if [ -f "$FEATURE_TARGET" ]; then
+    cp -f "$FEATURE_TARGET" "$FEATURE_BACKUP.tmp"
+    chmod 0644 "$FEATURE_BACKUP.tmp"
+    mv -f "$FEATURE_BACKUP.tmp" "$FEATURE_BACKUP"
+fi
+
+cp -f "$FEATURE_SOURCE" "$FEATURE_TARGET.tmp"
+chmod 0644 "$FEATURE_TARGET.tmp"
+mv -f "$FEATURE_TARGET.tmp" "$FEATURE_TARGET"
+
+if [ -d "$WORK_ROOT/extract/app_icons" ]; then
+    mkdir -p "$ICON_TARGET"
+    cp -af "$WORK_ROOT/extract/app_icons/." "$ICON_TARGET/"
+fi
+
+# oafd keeps the decrypted feature library in memory; restart it so the
+# newly installed library is loaded through the normal startup path.
+if /etc/init.d/appfilter restart >/dev/null 2>&1; then
+    echo "OK:feature library uploaded and applied"
+else
+    echo "ERROR:feature library installed but appfilter restart failed"
+    exit 1
+fi
