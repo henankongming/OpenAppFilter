@@ -57,7 +57,7 @@ function manual_feature_upload()
 				file_error = "invalid upload field"
 				return
 			end
-			file_name = meta.filename or "feature_package.bin"
+			file_name = meta.file or "feature_package.bin"
 			fp = io.open(upload_path, "w")
 			if not fp then
 				file_error = "unable to create temporary upload file"
