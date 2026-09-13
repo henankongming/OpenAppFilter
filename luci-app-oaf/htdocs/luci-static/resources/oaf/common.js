@@ -138,13 +138,14 @@ function debounce(func, wait) {
 }
 
 function throttle(func, limit) {
+    let inThrottle;
     return function() {
         const args = arguments;
         const context = this;
-        if (!this.inThrottle) {
+        if (!inThrottle) {
             func.apply(context, args);
-            this.inThrottle = true;
-            setTimeout(() => this.inThrottle = false, limit);
+            inThrottle = true;
+            setTimeout(() => inThrottle = false, limit);
         }
     };
 }
