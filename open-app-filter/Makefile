@@ -1,4 +1,3 @@
-
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=appfilter
@@ -53,6 +52,7 @@ define Package/appfilter/install
 	$(INSTALL_DATA) ./files/custom_feature.cfg $(1)/etc/fwxd/custom_feature.cfg
 	$(INSTALL_BIN) ./files/appfilter.init $(1)/etc/init.d/appfilter
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/oafd $(1)/usr/bin
+	$(INSTALL_BIN) ./files/oaf_manual_feature_update $(1)/usr/bin/oaf_manual_feature_update
 	$(INSTALL_BIN) ./files/rule_manager.lua $(1)/usr/bin/rule_manager
 	$(INSTALL_BIN) ./files/hnat.sh $(1)/usr/bin/hnat.sh
 	$(INSTALL_DATA) ./files/oaf_version $(1)/etc/oaf_version
