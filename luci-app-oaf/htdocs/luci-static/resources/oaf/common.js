@@ -138,14 +138,13 @@ function debounce(func, wait) {
 }
 
 function throttle(func, limit) {
-    let inThrottle;
     return function() {
         const args = arguments;
         const context = this;
-        if (!inThrottle) {
+        if (!this.inThrottle) {
             func.apply(context, args);
-            inThrottle = true;
-            setTimeout(() => inThrottle = false, limit);
+            this.inThrottle = true;
+            setTimeout(() => this.inThrottle = false, limit);
         }
     };
 }
@@ -191,6 +190,89 @@ function validateNetmask(mask) {
     return /^1+0*$/.test(binary);
 }
 
+function initManualFeatureUpload() {
+    if (document.getElementById('oaf-manual-feature-upload') || !document.getElementById('tab-online')) {
+        return;
+    }
+
+    const panel = document.querySelector('#tab-online .online-control-stack');
+    if (!panel) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.id = 'oaf-manual-feature-upload';
+    wrapper.style.marginTop = '14px';
+    wrapper.style.paddingTop = '14px';
+    wrapper.style.borderTop = '1px solid var(--border-color-low,#e5e7eb)';
+
+    wrapper.innerHTML = `
+        <div class="online-control-row">
+            <label for="manual-feature-file">Manual Upload / 手动上传</label>
+            <input type="file" id="manual-feature-file" accept=".bin,.tar.gz,.tgz" style="max-width:360px;">
+            <div class="online-actions">
+                <button type="button" class="cbi-button cbi-button-apply" id="manual-feature-upload-btn">Upload & Apply / 上传并应用</button>
+            </div>
+        </div>
+        <div class="feature-hint">Upload the official feature package (.tar.gz/.tgz, including feature.bin). The existing library is backed up before replacement. / 上传官方特征库压缩包（.tar.gz/.tgz，内含 feature.bin），替换前会自动备份当前特征库。</div>
+        <div id="manual-feature-upload-status" class="feature-status" style="display:none;"></div>
+    `;
+
+    panel.appendChild(wrapper);
+
+    const input = document.getElementById('manual-feature-file');
+    const button = document.getElementById('manual-feature-upload-btn');
+    const status = document.getElementById('manual-feature-upload-status');
+
+    button.addEventListener('click', async () => {
+        const file = input.files && input.files[0];
+        if (!file) {
+            status.style.display = 'block';
+            status.className = 'feature-status error';
+            status.textContent = 'Please select a feature package. / 请选择特征库文件。';
+            return;
+        }
+        if (file.size > 20 * 1024 * 1024) {
+            status.style.display = 'block';
+            status.className = 'feature-status error';
+            status.textContent = 'Feature package is larger than 20 MB. / 特征库压缩包不能超过 20 MB。';
+            return;
+        }
+
+        const form = new FormData();
+        form.append('feature_file', file, file.name);
+        button.disabled = true;
+        status.style.display = 'block';
+        status.className = 'feature-status';
+        status.textContent = 'Uploading and applying... / 正在上传并应用...';
+
+        try {
+            const base = window.location.pathname.replace(/\/$/, '');
+            const response = await fetch(base + '/manual_upload', {
+                method: 'POST',
+                body: form,
+                credentials: 'same-origin'
+            });
+            const result = await response.json();
+            if (result && result.code === 2000) {
+                status.className = 'feature-status success';
+                status.textContent = result.data && result.data.message
+                    ? result.data.message
+                    : 'Feature library updated successfully. / 特征库更新成功。';
+                setTimeout(() => window.location.reload(), 1200);
+            } else {
+                status.className = 'feature-status error';
+                status.textContent = (result && result.data && result.data.error)
+                    ? result.data.error
+                    : 'Feature library update failed. / 特征库更新失败。';
+            }
+        } catch (e) {
+            status.className = 'feature-status error';
+            status.textContent = 'Upload request failed. / 上传请求失败。';
+        } finally {
+            button.disabled = false;
+        }
+    });
+}
+
 window.showCommonModal = showCommonModal;
 window.showSuccess = showSuccess;
 window.showWarning = showWarning;
@@ -204,4 +286,10 @@ window.getUrlParameter = getUrlParameter;
 window.setUrlParameter = setUrlParameter;
 window.deepClone = deepClone;
 window.validateIP = validateIP;
-window.validateNetmask = validateNetmask; 
+window.validateNetmask = validateNetmask;
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initManualFeatureUpload);
+} else {
+    initManualFeatureUpload();
+}
