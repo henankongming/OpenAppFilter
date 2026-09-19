@@ -27,6 +27,7 @@
 #include "fwx_feature.h"
 #include "fwx_feature_online.h"
 #include "fwx_custom_feature.h"
+#include "fwx_history_db.h"
 
 int current_log_level = LOG_LEVEL_WARN;
 //int current_log_level = LOG_LEVEL_INFO;
@@ -509,7 +510,14 @@ int main(int argc, char **argv)
     signal(SIGCHLD, SIG_IGN);
     init_client_list();
     load_app_valid_time_config();
-    init_client_visit_db();
+
+    if (oaf_history_db_init() == 0) {
+        (void)oaf_history_db_migrate_legacy_visit_db("/tmp/fwx/client.db");
+    } else {
+        LOG_ERROR("SQLite history database unavailable; realtime filtering continues
+");
+    }
+
     load_client_backup_from_files();
     init_system_config_to_proc();
     init_fwx_capability();
@@ -533,6 +541,8 @@ int main(int argc, char **argv)
     uloop_timeout_add(&fwx_tm);
     uloop_run();
     stop_check_thread();
+    (void)oaf_history_db_flush_all();
+    oaf_history_db_close();
     fwx_feature_online_cleanup();
     uloop_done();
     return 0;
