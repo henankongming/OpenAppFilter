@@ -22,6 +22,8 @@ function index()
     entry({"admin", "services", "oaf", "app_record"}, template("oaf/app_record"), _("App Record"), 70).leaf = true
     entry({"admin", "services", "oaf", "api", "app_record", "get_active_app_records"}, call("get_active_app_records")).leaf = true
     entry({"admin", "services", "oaf", "api", "app_record", "get_app_history_records"}, call("get_app_history_records")).leaf = true
+    entry({"admin", "services", "oaf", "api", "app_record", "get_history_traffic_records"}, call("get_history_traffic_records")).leaf = true
+    entry({"admin", "services", "oaf", "api", "app_record", "get_history_traffic_total"}, call("get_history_traffic_total")).leaf = true
 end
 
 function get_active_app_records()
@@ -79,5 +81,72 @@ function get_app_history_records()
         luci.http.write_json(resp_obj.data)
     else
         write_empty_list(page, page_size)
+    end
+end
+
+
+function get_history_traffic_records()
+    local util = require "luci.util"
+    local mac = luci.http.formvalue("mac")
+    local start_time = tonumber(luci.http.formvalue("start_time") or "0") or 0
+    local end_time = tonumber(luci.http.formvalue("end_time") or "0") or 0
+    local appid = tonumber(luci.http.formvalue("appid") or "0") or 0
+    local page = normalize_page(luci.http.formvalue("page"), 1)
+    local page_size = normalize_page(luci.http.formvalue("page_size"), 50)
+
+    if appid < 0 then
+        appid = 0
+    end
+
+    luci.http.prepare_content("application/json")
+
+    local req_obj = {
+        api = "get_history_traffic_records",
+        data = {
+            mac = mac,
+            start_time = start_time,
+            end_time = end_time,
+            appid = appid,
+            page = page,
+            page_size = page_size
+        }
+    }
+
+    local resp_obj = util.ubus("fwx", "common", req_obj)
+    if resp_obj and resp_obj.code == 2000 and resp_obj.data then
+        luci.http.write_json(resp_obj.data)
+    else
+        write_empty_list(page, page_size)
+    end
+end
+
+function get_history_traffic_total()
+    local util = require "luci.util"
+    local mac = luci.http.formvalue("mac")
+    local start_time = tonumber(luci.http.formvalue("start_time") or "0") or 0
+    local end_time = tonumber(luci.http.formvalue("end_time") or "0") or 0
+    local appid = tonumber(luci.http.formvalue("appid") or "0") or 0
+
+    if appid < 0 then
+        appid = 0
+    end
+
+    luci.http.prepare_content("application/json")
+
+    local req_obj = {
+        api = "get_history_traffic_total",
+        data = {
+            mac = mac,
+            start_time = start_time,
+            end_time = end_time,
+            appid = appid
+        }
+    }
+
+    local resp_obj = util.ubus("fwx", "common", req_obj)
+    if resp_obj and resp_obj.code == 2000 and resp_obj.data then
+        luci.http.write_json(resp_obj.data)
+    else
+        luci.http.write_json({ traffic_kb = 0, total_kb = 0 })
     end
 end
