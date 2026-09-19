@@ -684,6 +684,7 @@ static u_int32_t af_client_hook(unsigned int hook,
 	struct ethhdr *ethhdr = NULL;
 	unsigned char smac[ETH_ALEN];
 	af_client_info_t *nfc = NULL;
+	u_int32_t app_id = 0;
 	int pkt_dir = 0;
 	struct iphdr *iph = NULL;
 	unsigned int ip = 0;
@@ -751,7 +752,13 @@ static u_int32_t af_client_hook(unsigned int hook,
 		}
 		nfc->flow.up_bytes += skb->len;
 		nfc->flow.up_pkts++;
-		nfc->update_jiffies = jiffies;  
+		nfc->update_jiffies = jiffies;
+		app_id = fwx_ct_get_appid(ct);
+		if (fwx_ct_is_valid_appid(app_id) &&
+		    !nfc->record_whitelist &&
+		    !fwx_ct_test_bit(ct, FWX_CT_IGNORE_BIT)) {
+			af_update_client_app_flow(nfc, app_id, PKT_DIR_UP, skb->len);
+		}
 	}
 
 	AF_CLIENT_UNLOCK_W();
@@ -777,6 +784,7 @@ static u_int32_t af_client_hook2(unsigned int hook,
 	struct ethhdr *ethhdr = NULL;
 	unsigned char smac[ETH_ALEN];
 	af_client_info_t *nfc = NULL;
+	u_int32_t app_id = 0;
 	int pkt_dir = 0;
 	struct iphdr *iph = NULL;
 	struct ipv6hdr *ip6h = NULL;
@@ -829,7 +837,13 @@ static u_int32_t af_client_hook2(unsigned int hook,
 	if (nfc){
 		nfc->flow.down_bytes += skb->len;
 		nfc->flow.down_pkts++;
-		nfc->update_jiffies = jiffies;  
+		nfc->update_jiffies = jiffies;
+		app_id = fwx_ct_get_appid(ct);
+		if (fwx_ct_is_valid_appid(app_id) &&
+		    !nfc->record_whitelist &&
+		    !fwx_ct_test_bit(ct, FWX_CT_IGNORE_BIT)) {
+			af_update_client_app_flow(nfc, app_id, PKT_DIR_DOWN, skb->len);
+		}
 	}
 
 	AF_CLIENT_UNLOCK_R();
