@@ -18,7 +18,7 @@
 #include "fwx_user.h"
 #include "fwx_netlink.h"
 #include "fwx.h"
-#define MAX_NL_RCV_BUF_SIZE 4096
+#define MAX_NL_RCV_BUF_SIZE 16384
 
 #define REPORT_INTERVAL_SECS 60
 
