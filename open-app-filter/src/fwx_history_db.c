@@ -26,7 +26,7 @@
 typedef struct pending_flow {
     time_t ts_minute;
     int app_id;
-    uint64_t traffic_kb;
+    uint64_t traffic_bytes;
     char mac[32];
     struct pending_flow *next;
 } pending_flow_t;
@@ -510,7 +510,7 @@ void oaf_history_db_close(void)
                     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)p->ts_minute);
                     sqlite3_bind_int(stmt, 2, device_id);
                     sqlite3_bind_int(stmt, 3, p->app_id);
-                    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)p->traffic_kb);
+                    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)(p->traffic_bytes / 1024ULL));
                     tx_rc = sqlite3_step(stmt);
                     sqlite3_reset(stmt);
                     sqlite3_clear_bindings(stmt);
@@ -552,15 +552,15 @@ int oaf_history_db_is_ready(void)
     return ready;
 }
 
-int oaf_history_db_record_minute(const char *mac,
-                                 int app_id,
-                                 time_t timestamp,
-                                 uint64_t traffic_kb)
+int oaf_history_db_record_minute_bytes(const char *mac,
+                                       int app_id,
+                                       time_t timestamp,
+                                       uint64_t traffic_bytes)
 {
     pending_flow_t *p;
     time_t ts_minute;
 
-    if (!mac || !*mac || app_id <= 0 || traffic_kb == 0)
+    if (!mac || !*mac || app_id <= 0 || traffic_bytes == 0)
         return 0;
 
     pthread_mutex_lock(&g_db_lock);
@@ -573,7 +573,7 @@ int oaf_history_db_record_minute(const char *mac,
     ts_minute = (timestamp / 60) * 60;
     p = find_pending(mac, app_id, ts_minute);
     if (p) {
-        p->traffic_kb += traffic_kb;
+        p->traffic_bytes += traffic_bytes;
         pthread_mutex_unlock(&g_db_lock);
         return 0;
     }
@@ -592,7 +592,7 @@ int oaf_history_db_record_minute(const char *mac,
 
     p->ts_minute = ts_minute;
     p->app_id = app_id;
-    p->traffic_kb = traffic_kb;
+    p->traffic_bytes = traffic_bytes;
     strncpy(p->mac, mac, sizeof(p->mac) - 1);
     p->next = g_pending;
     g_pending = p;
@@ -682,7 +682,7 @@ int oaf_history_db_flush_due(time_t now)
         sqlite3_bind_int64(stmt, 1, (sqlite3_int64)p->ts_minute);
         sqlite3_bind_int(stmt, 2, device_id);
         sqlite3_bind_int(stmt, 3, p->app_id);
-        sqlite3_bind_int64(stmt, 4, (sqlite3_int64)p->traffic_kb);
+        sqlite3_bind_int64(stmt, 4, (sqlite3_int64)(p->traffic_bytes / 1024ULL));
         rc = sqlite3_step(stmt);
         sqlite3_reset(stmt);
         sqlite3_clear_bindings(stmt);
