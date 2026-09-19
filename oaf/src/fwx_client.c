@@ -572,7 +572,8 @@ int __af_visit_info_report(af_client_info_t *node)
 			continue;
 		visit_obj = cJSON_CreateObject();
 		cJSON_AddNumberToObject(visit_obj, "appid", info->app_id);
-		cJSON_AddNumberToObject(visit_obj, "traffic_kb", (double)traffic_kb);
+		cJSON_AddNumberToObject(visit_obj, "traffic_bytes",
+						(double)(info->period_up_bytes + info->period_down_bytes));
 		cJSON_AddItemToArray(traffic_info_array, visit_obj);
 	}
 
