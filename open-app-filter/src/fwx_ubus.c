@@ -21,6 +21,7 @@
 #include <libubox/blobmsg.h>
 #include <sqlite3.h>
 #include <time.h>
+#include <stdint.h>
 #include "fwx_user.h"
 #include "fwx_history_db.h"
 #include "fwx_config.h"
