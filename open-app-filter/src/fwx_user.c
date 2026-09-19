@@ -26,6 +26,7 @@
 #include "fwx_config.h"
 #include "fwx.h"
 #include "fwx_user.h"
+#include "fwx_history_db.h"
 #include "fwx_utils.h"
 
 
@@ -2961,9 +2962,6 @@ daily_hourly_stat_t *get_today_stat(client_node_t *client) {
     }
     
     
-    if (client->daily_stats.date != 0 && client->daily_stats.date != today) {
-        save_daily_stats_to_file(client, client->daily_stats.date);
-    }
     
     
     client->daily_stats.date = today;
@@ -3428,19 +3426,9 @@ void check_and_archive_all_clients(void) {
 
 
                 list_move(&p_info->visit, &node->visit);
-                save_visit_record_to_db(node->mac, p_info);
             }
         }
-        
         save_client_visit_data_to_file(node, yesterday);
-        
-        
-        if (node->daily_stats.date == yesterday) {
-            save_daily_stats_to_file(node, yesterday);
-        }
-        if (node->daily_top_apps_stats.date == yesterday) {
-            save_daily_top_apps_stats_to_file(node, yesterday);
-        }
         
         
         u_int32_t date_end = yesterday + SECONDS_PER_DAY - 1;
@@ -3549,9 +3537,6 @@ daily_top_apps_stat_t *get_today_top_apps_stat(client_node_t *client) {
     }
     
     
-    if (client->daily_top_apps_stats.date != 0 && client->daily_top_apps_stats.date != today) {
-        save_daily_top_apps_stats_to_file(client, client->daily_top_apps_stats.date);
-    }
     
     
     client->daily_top_apps_stats.date = today;
@@ -3807,136 +3792,54 @@ static void format_time_string(u_int32_t timestamp, char *time_str, size_t len) 
 }
 
 
-void save_client_visit_data_to_file(client_node_t *client, u_int32_t date) {
+void save_client_visit_data_to_file(client_node_t *client, u_int32_t date)
+{
+    oaf_history_visit_record_t *records = NULL;
+    size_t count = 0;
+    size_t i = 0;
+    visit_info_t *p_info = NULL;
+
     if (!client)
         return;
-    LOG_DEBUG("begin save_client_visit_data_to_file: %s, date: %u\n", client->mac, date);
-    
-    int visit_count = 0;
-    visit_info_t *p_info = NULL;
-    u_int32_t date_end = date + SECONDS_PER_DAY - 1;  
-    
+
     list_for_each_entry(p_info, &client->visit, visit) {
-        
-        if (p_info->first_time >= date && p_info->first_time <= date_end) {
-            visit_count++;
+        u_int32_t date_end = date + SECONDS_PER_DAY - 1;
+        if (p_info->first_time >= date && p_info->first_time <= date_end)
+            count++;
+    }
+
+    if (count > 0) {
+        records = calloc(count, sizeof(*records));
+        if (!records) {
+            LOG_ERROR("history db: failed to allocate %zu visit records for %s\n",
+                      count, client->mac);
+            return;
+        }
+
+        list_for_each_entry(p_info, &client->visit, visit) {
+            u_int32_t date_end = date + SECONDS_PER_DAY - 1;
+            if (p_info->first_time < date || p_info->first_time > date_end)
+                continue;
+
+            records[i].app_id = p_info->appid;
+            records[i].start_time = p_info->first_time;
+            records[i].end_time = p_info->latest_time;
+            records[i].duration = (int)(p_info->latest_time - p_info->first_time);
+            if (records[i].duration <= 0)
+                records[i].duration = 1;
+            records[i].action = p_info->action;
+            i++;
         }
     }
-    
-    
-    if (visit_count == 0) {
-        char date_str[32] = {0};
-        get_date_string(date, date_str, sizeof(date_str));
-        LOG_DEBUG("No visit records for client %s on date %s, skip saving\n", client->mac, date_str);
-        return;
-    }
-    
-    
-    if (ensure_dir_exists(get_history_data_root_dir()) != 0) {
-        LOG_ERROR("Failed to create root directory: %s\n", get_history_data_root_dir());
-        return;
-    }
-    
-    char date_str[32] = {0};
-    get_date_string(date, date_str, sizeof(date_str));
-    
-    char file_path[512] = {0};
-    sqlite3 *db = NULL;
-    sqlite3_stmt *delete_stmt = NULL;
-    sqlite3_stmt *insert_stmt = NULL;
-    int rc = SQLITE_OK;
-    int transaction_started = 0;
-    build_client_visit_db_path(file_path, sizeof(file_path));
 
-    if (open_client_visit_db(&db) != 0) {
-        LOG_ERROR("Failed to open client visit db: %s (client: %s, date: %s)\n",
-                  file_path, client->mac, date_str);
-        return;
+    if (oaf_history_db_replace_visit_day(client->mac, (time_t)date,
+                                         records, i) != 0) {
+        LOG_ERROR("history db: failed to replace visit history for %s, date=%u\n",
+                  client->mac, date);
     }
 
-    rc = sqlite3_exec(db, "BEGIN TRANSACTION;", NULL, NULL, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_ERROR("Failed to begin transaction: %s (rc: %d)\n", file_path, rc);
-        sqlite3_close(db);
-        return;
-    }
-    transaction_started = 1;
-
-    rc = sqlite3_prepare_v2(db,
-                            "DELETE FROM app_visit_record WHERE mac = ? AND record_date = ?;",
-                            -1, &delete_stmt, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_ERROR("Failed to prepare delete statement: %s (rc: %d)\n", file_path, rc);
-        goto CLEANUP;
-    }
-
-    sqlite3_bind_text(delete_stmt, 1, client->mac, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(delete_stmt, 2, date);
-    rc = sqlite3_step(delete_stmt);
-    if (rc != SQLITE_DONE) {
-        LOG_ERROR("Failed to clear app visit records: %s (rc: %d)\n", file_path, rc);
-        goto CLEANUP;
-    }
-
-    rc = sqlite3_prepare_v2(db,
-                            "INSERT INTO app_visit_record (mac, record_date, appid, start_time, end_time, duration, action) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?);",
-                            -1, &insert_stmt, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_ERROR("Failed to prepare insert statement: %s (rc: %d)\n", file_path, rc);
-        goto CLEANUP;
-    }
-
-    
-    list_for_each_entry(p_info, &client->visit, visit) {
-        
-        if (p_info->first_time < date || p_info->first_time > date_end) {
-            LOG_DEBUG("skip visit record: %u, %u\n", p_info->first_time, date_end);
-            continue;
-        }
-        
-        int duration = p_info->latest_time - p_info->first_time;
-        if (duration == 0)
-            duration = 1;
-
-        sqlite3_bind_text(insert_stmt, 1, client->mac, -1, SQLITE_STATIC);
-        sqlite3_bind_int64(insert_stmt, 2, date);
-        sqlite3_bind_int(insert_stmt, 3, p_info->appid);
-        sqlite3_bind_int64(insert_stmt, 4, p_info->first_time);
-        sqlite3_bind_int64(insert_stmt, 5, p_info->latest_time);
-        sqlite3_bind_int(insert_stmt, 6, duration);
-        sqlite3_bind_int(insert_stmt, 7, p_info->action);
-
-        rc = sqlite3_step(insert_stmt);
-        if (rc != SQLITE_DONE) {
-            LOG_ERROR("Failed to insert app visit record: %s (rc: %d)\n", file_path, rc);
-            goto CLEANUP;
-        }
-        sqlite3_reset(insert_stmt);
-        sqlite3_clear_bindings(insert_stmt);
-    }
-
-    rc = sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_ERROR("Failed to commit transaction: %s (rc: %d)\n", file_path, rc);
-        goto CLEANUP;
-    }
-    transaction_started = 0;
-    
-    LOG_DEBUG("Saved visit data for client %s (date: %s, records: %d) to sqlite db %s\n", 
-             client->mac, date_str, visit_count, file_path);
-
-CLEANUP:
-    if (delete_stmt)
-        sqlite3_finalize(delete_stmt);
-    if (insert_stmt)
-        sqlite3_finalize(insert_stmt);
-    if (transaction_started)
-        sqlite3_exec(db, "ROLLBACK;", NULL, NULL, NULL);
-    if (db)
-        sqlite3_close(db);
+    free(records);
 }
-
 
 static u_int32_t parse_date_string(const char *date_str) {
     if (!date_str)
