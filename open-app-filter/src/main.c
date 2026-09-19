@@ -40,7 +40,6 @@ int g_fwx_config_chage = 1;
 int g_hnat_init = 0;
 int g_feature_update = 0;
 
-extern void check_and_cleanup_history_data_by_size(void);
 extern void collect_interface_traffic_rate(void);
 
 fwx_status_t g_fwx_status = {
@@ -367,7 +366,11 @@ void fwx_timeout_handler(struct uloop_timeout *t)
         }
         dump_client_list();
         cleanup_expired_hourly_stats();
-        check_and_cleanup_history_data_by_size();
+        if (oaf_history_db_is_ready()) {
+            (void)oaf_history_db_maintenance((time_t)current_time);
+        } else {
+            (void)oaf_history_db_init();
+        }
     }
     if (count % CLIENT_BACKUP_SYNC_INTERVAL_SEC == 0) {
         LOG_INFO("begin save all client to files\n");
@@ -517,8 +520,7 @@ int main(int argc, char **argv)
                  get_history_data_root_dir());
         (void)oaf_history_db_migrate_legacy_visit_db(legacy_db_path);
     } else {
-        LOG_ERROR("SQLite history database unavailable; realtime filtering continues
-");
+        LOG_ERROR("SQLite history database unavailable; realtime filtering continues\n");
     }
 
     load_client_backup_from_files();
