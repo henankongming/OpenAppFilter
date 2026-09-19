@@ -773,7 +773,7 @@ int oaf_history_db_flush_all(void)
         sqlite3_bind_int64(stmt, 1, (sqlite3_int64)p->ts_minute);
         sqlite3_bind_int(stmt, 2, device_id);
         sqlite3_bind_int(stmt, 3, p->app_id);
-        sqlite3_bind_int64(stmt, 4, (sqlite3_int64)p->traffic_kb);
+        sqlite3_bind_int64(stmt, 4, (sqlite3_int64)(p->traffic_bytes / 1024ULL));
         rc = sqlite3_step(stmt);
         sqlite3_reset(stmt);
         sqlite3_clear_bindings(stmt);
