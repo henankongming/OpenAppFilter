@@ -100,6 +100,19 @@ static void db_rollback(void)
         sqlite3_exec(g_db, "ROLLBACK;", NULL, NULL, NULL);
 }
 
+static void requeue_pending_locked(pending_flow_t *list)
+{
+    pending_flow_t *p = list;
+
+    while (p) {
+        pending_flow_t *next = p->next;
+        p->next = g_pending;
+        g_pending = p;
+        g_pending_count++;
+        p = next;
+    }
+}
+
 static int db_is_fatal_error(int rc)
 {
     return rc == SQLITE_FULL ||
@@ -147,6 +160,7 @@ static void disable_db_locked(int rc)
     g_db_disabled = 1;
     g_db_ready = 0;
     LOG_ERROR("history db disabled after SQLite error rc=%d; realtime filtering is unaffected\n", rc);
+    free_caches();
 }
 
 static int get_user_version(int *version)
@@ -650,16 +664,12 @@ int oaf_history_db_flush_due(time_t now)
         return 0;
     }
 
-    if (db_begin() != 0) {
+    rc = db_begin();
+    if (rc != SQLITE_OK) {
         /* Put the records back so a transient failure can be retried. */
-        p = flush_list;
-        while (p) {
-            next = p->next;
-            p->next = g_pending;
-            g_pending = p;
-            g_pending_count++;
-            p = next;
-        }
+        requeue_pending_locked(flush_list);
+        if (db_is_fatal_error(rc))
+            disable_db_locked(rc);
         pthread_mutex_unlock(&g_db_lock);
         return -1;
     }
@@ -699,31 +709,20 @@ int oaf_history_db_flush_due(time_t now)
 
     if (rc == SQLITE_DONE || rc == SQLITE_OK) {
         rc = db_commit();
-        if (rc == 0)
+        if (rc == SQLITE_OK)
             transaction_started = 0;
-        else
-            rc = SQLITE_ERROR;
     }
 
 FAIL:
     if (stmt)
         sqlite3_finalize(stmt);
-    if (rc != 0) {
+    if (rc != SQLITE_OK) {
         if (transaction_started)
             db_rollback();
-        /* Keep data for non-fatal errors; fatal errors are disabled and dropped. */
+        free_caches();
+        requeue_pending_locked(flush_list);
         if (db_is_fatal_error(rc))
             disable_db_locked(rc);
-        else {
-            p = flush_list;
-            while (p) {
-                next = p->next;
-                p->next = g_pending;
-                g_pending = p;
-                g_pending_count++;
-                p = next;
-            }
-        }
         pthread_mutex_unlock(&g_db_lock);
         return -1;
     }
@@ -755,7 +754,10 @@ int oaf_history_db_flush_all(void)
         return 0;
     }
 
-    if (db_begin() != 0) {
+    rc = db_begin();
+    if (rc != SQLITE_OK) {
+        if (db_is_fatal_error(rc))
+            disable_db_locked(rc);
         pthread_mutex_unlock(&g_db_lock);
         return -1;
     }
@@ -790,18 +792,17 @@ int oaf_history_db_flush_all(void)
 
     if (rc == SQLITE_DONE || rc == SQLITE_OK) {
         rc = db_commit();
-        if (rc == 0)
+        if (rc == SQLITE_OK)
             transaction_started = 0;
-        else
-            rc = SQLITE_ERROR;
     }
 
 FAIL_ALL:
     if (stmt)
         sqlite3_finalize(stmt);
-    if (rc != 0) {
+    if (rc != SQLITE_OK) {
         if (transaction_started)
             db_rollback();
+        free_caches();
         if (db_is_fatal_error(rc))
             disable_db_locked(rc);
         pthread_mutex_unlock(&g_db_lock);
