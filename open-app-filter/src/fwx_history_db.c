@@ -54,6 +54,14 @@ static app_cache_t *g_app_cache = NULL;
 static pthread_mutex_t g_db_lock = PTHREAD_MUTEX_INITIALIZER;
 static time_t g_last_maintenance_day = (time_t)-1;
 
+static sqlite3_int64 traffic_bytes_to_kb(uint64_t bytes)
+{
+    sqlite3_int64 kb = (sqlite3_int64)(bytes / 1024ULL);
+    if (bytes % 1024ULL)
+        kb++;
+    return kb > 0 ? kb : 1;
+}
+
 static int mkdir_one(const char *path)
 {
     if (mkdir(path, 0755) == 0 || errno == EEXIST)
@@ -510,7 +518,7 @@ void oaf_history_db_close(void)
                     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)p->ts_minute);
                     sqlite3_bind_int(stmt, 2, device_id);
                     sqlite3_bind_int(stmt, 3, p->app_id);
-                    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)(p->traffic_bytes / 1024ULL));
+                    sqlite3_bind_int64(stmt, 4, traffic_bytes_to_kb(p->traffic_bytes));
                     tx_rc = sqlite3_step(stmt);
                     sqlite3_reset(stmt);
                     sqlite3_clear_bindings(stmt);
@@ -860,7 +868,7 @@ int oaf_history_db_maintenance(time_t now)
         sqlite3_stmt *del = NULL;
         const char *insert_sql =
             "INSERT INTO traffic_day(day, device_id, app_id, traffic_kb) "
-            "SELECT CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', ts_minute, 'unixepoch')) AS INTEGER), "
+            "SELECT CAST(strftime('%s', datetime(ts_minute, 'unixepoch', 'localtime', 'start of day'), 'utc') AS INTEGER), "
             "device_id, app_id, SUM(traffic_kb) "
             "FROM traffic_minute WHERE ts_minute < ? "
             "GROUP BY 1, device_id, app_id "
@@ -924,7 +932,7 @@ int oaf_history_db_maintenance(time_t now)
         sqlite3_stmt *del = NULL;
         const char *insert_sql =
             "INSERT INTO traffic_month(month, device_id, app_id, traffic_kb) "
-            "SELECT CAST(strftime('%s', strftime('%Y-%m-01 00:00:00', day, 'unixepoch')) AS INTEGER), "
+            "SELECT CAST(strftime('%s', datetime(day, 'unixepoch', 'localtime', 'start of month'), 'utc') AS INTEGER), "
             "device_id, app_id, SUM(traffic_kb) "
             "FROM traffic_day WHERE day < ? "
             "GROUP BY 1, device_id, app_id "
