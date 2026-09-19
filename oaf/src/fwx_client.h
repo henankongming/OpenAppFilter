@@ -67,6 +67,8 @@ typedef struct app_visit_info
 	unsigned int latest_action;
 	unsigned int conn_count;
 	unsigned int is_http;
+	unsigned long long period_up_bytes;
+	unsigned long long period_down_bytes;
 } app_visit_info_t;
 
 typedef struct visiting_info{
@@ -120,6 +122,8 @@ af_client_info_t *find_and_add_af_client(unsigned char *mac);
 app_visit_info_t *get_or_create_visit_info(af_client_info_t *node, unsigned int app_id);
 int af_update_client_app_info(af_client_info_t *node, int app_id, int drop, int from_conntrack, int is_http, int update_visiting);
 void check_expired_visit_info(af_client_info_t *node);
+void af_update_client_app_flow(af_client_info_t *node, unsigned int app_id,
+                               unsigned int pkt_dir, unsigned int bytes);
 
 int fwx_match_record_whitelist(const unsigned char *mac);
 int fwx_set_record_whitelist(const char *mac_list_str);
