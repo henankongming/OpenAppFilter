@@ -147,7 +147,6 @@ static void disable_db_locked(int rc)
     g_db_disabled = 1;
     g_db_ready = 0;
     LOG_ERROR("history db disabled after SQLite error rc=%d; realtime filtering is unaffected\n", rc);
-    free_pending();
 }
 
 static int get_user_version(int *version)
@@ -690,7 +689,7 @@ int oaf_history_db_flush_due(time_t now)
         sqlite3_bind_int64(stmt, 1, (sqlite3_int64)p->ts_minute);
         sqlite3_bind_int(stmt, 2, device_id);
         sqlite3_bind_int(stmt, 3, p->app_id);
-        sqlite3_bind_int64(stmt, 4, (sqlite3_int64)(p->traffic_bytes / 1024ULL));
+        sqlite3_bind_int64(stmt, 4, traffic_bytes_to_kb(p->traffic_bytes));
         rc = sqlite3_step(stmt);
         sqlite3_reset(stmt);
         sqlite3_clear_bindings(stmt);
@@ -813,28 +812,6 @@ FAIL_ALL:
     (void)now;
     pthread_mutex_unlock(&g_db_lock);
     return 0;
-}
-
-static int execute_archive_locked(const char *sql_insert,
-                                  const char *sql_delete)
-{
-    int rc;
-
-    if (db_begin() != 0)
-        return -1;
-
-    rc = db_exec(sql_insert);
-    if (rc == 0)
-        rc = db_exec(sql_delete);
-
-    if (rc == 0) {
-        if (db_commit() == 0)
-            return 0;
-        rc = -1;
-    }
-
-    db_rollback();
-    return rc;
 }
 
 int oaf_history_db_maintenance(time_t now)
@@ -1004,21 +981,6 @@ static int resolve_device_id_locked(const char *mac)
         id = sqlite3_column_int(stmt, 0);
     sqlite3_finalize(stmt);
     return id;
-}
-
-static void build_filters(char *buf,
-                          size_t len,
-                          int has_device,
-                          int has_app,
-                          const char *time_col)
-{
-    buf[0] = '\0';
-    if (has_device)
-        strncat(buf, " AND device_id = :device_id", len - strlen(buf) - 1);
-    if (has_app)
-        strncat(buf, " AND app_id = :app_id", len - strlen(buf) - 1);
-    if (time_col)
-        strncat(buf, " AND " , len - strlen(buf) - 1);
 }
 
 static int bind_common_filter(sqlite3_stmt *stmt,
