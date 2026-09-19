@@ -39,6 +39,7 @@ int g_fwxd_debug_mode = 0;
 int g_fwx_config_chage = 1;
 int g_hnat_init = 0;
 int g_feature_update = 0;
+static volatile sig_atomic_t g_shutdown_requested = 0;
 
 extern void collect_interface_traffic_rate(void);
 
@@ -372,6 +373,11 @@ void fwx_timeout_handler(struct uloop_timeout *t)
             (void)oaf_history_db_init();
         }
     }
+    if (g_shutdown_requested) {
+        uloop_end();
+        return;
+    }
+
     if (count % CLIENT_BACKUP_SYNC_INTERVAL_SEC == 0) {
         LOG_INFO("begin save all client to files\n");
         save_all_client_backup_to_files();
@@ -468,6 +474,12 @@ void fwx_handle_sigusr1(int sig) {
              FEATURE_UPGRADE_SUCCESS);
 }
 
+static void fwx_handle_sigterm(int sig)
+{
+    (void)sig;
+    g_shutdown_requested = 1;
+}
+
 void fwx_handle_sigusr2(int sig) {
     LOG_INFO("Received SIGUSR2 signal\n");
 	if (current_log_level < LOG_LEVEL_DEBUG)
@@ -510,6 +522,8 @@ int main(int argc, char **argv)
     uloop_init();
     signal(SIGUSR1, fwx_handle_sigusr1);	
     signal(SIGUSR2, fwx_handle_sigusr2);
+    signal(SIGTERM, fwx_handle_sigterm);
+    signal(SIGINT, fwx_handle_sigterm);
     signal(SIGCHLD, SIG_IGN);
     init_client_list();
     load_app_valid_time_config();
