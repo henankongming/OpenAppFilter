@@ -3501,8 +3501,6 @@ void check_and_archive_all_clients(void) {
     
     save_all_client_backup_to_files();
     
-    
-    cleanup_old_record_files();
 }
 
 
