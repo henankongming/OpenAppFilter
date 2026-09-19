@@ -512,7 +512,10 @@ int main(int argc, char **argv)
     load_app_valid_time_config();
 
     if (oaf_history_db_init() == 0) {
-        (void)oaf_history_db_migrate_legacy_visit_db("/tmp/fwx/client.db");
+        char legacy_db_path[512] = {0};
+        snprintf(legacy_db_path, sizeof(legacy_db_path), "%s/client.db",
+                 get_history_data_root_dir());
+        (void)oaf_history_db_migrate_legacy_visit_db(legacy_db_path);
     } else {
         LOG_ERROR("SQLite history database unavailable; realtime filtering continues
 ");
