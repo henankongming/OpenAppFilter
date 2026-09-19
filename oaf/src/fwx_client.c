@@ -505,7 +505,7 @@ int __af_visit_info_report(af_client_info_t *node)
 	struct hlist_head *head;
 	app_visit_info_t *info;
 	app_visit_info_t *info_array[MAX_RECORD_APP_NUM];
-	app_visit_info_t *traffic_array[MAX_RECORD_APP_NUM];
+	app_visit_info_t *traffic_array[MAX_TRAFFIC_REPORT_APP_NUM];
 	int report_count = 0;
 	time_t report_time = af_get_timestamp_sec();
 
@@ -543,7 +543,7 @@ int __af_visit_info_report(af_client_info_t *node)
 				info_array[total_count++] = info;
 
 			if ((info->period_up_bytes > 0 || info->period_down_bytes > 0) &&
-			    traffic_count < MAX_RECORD_APP_NUM)
+			    traffic_count < MAX_TRAFFIC_REPORT_APP_NUM)
 				traffic_array[traffic_count++] = info;
 		}
 	}
