@@ -38,6 +38,7 @@ extern int g_min_http_match_count;
 
 #define MAX_VISIT_HISTORY_TIME 24
 #define MAX_RECORD_APP_NUM 64
+#define MAX_TRAFFIC_REPORT_APP_NUM 128
 #define MAX_VISIT_INFO_HASH_SIZE 32
 #define MIN_REPORT_URL_LEN 4
 #define MAX_REPORT_URL_LEN 64
