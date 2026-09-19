@@ -6,15 +6,15 @@
 #ifndef __FWX_H__
 #define __FWX_H__
 #define FWX_VERSION "6.0.1"
-#define MAX_FWX_NL_MSG_LEN 1024
+#define MAX_FWX_NL_MSG_LEN 8192
 #define FWX_TIMER_INTERVAL 1
 #define MAX_HOST_LEN 40
 #define MIN_HOST_LEN 4
-#define MAX_FWX_NETLINK_MSG_LEN 1024
+#define MAX_FWX_NETLINK_MSG_LEN 8192
 #define MAX_MATCH_PKT_NUM 20
 #define FWX_NETLINK_ID 29
 
-#define MAX_NETLINK_MSG_LEN 1024
+#define MAX_NETLINK_MSG_LEN 8192
 
 
 #include <linux/types.h>
