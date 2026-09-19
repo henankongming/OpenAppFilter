@@ -78,12 +78,12 @@ static int db_exec(const char *sql)
 
 static int db_begin(void)
 {
-    return db_exec("BEGIN IMMEDIATE TRANSACTION;");
+    return sqlite3_exec(g_db, "BEGIN IMMEDIATE TRANSACTION;", NULL, NULL, NULL);
 }
 
 static int db_commit(void)
 {
-    return db_exec("COMMIT;");
+    return sqlite3_exec(g_db, "COMMIT;", NULL, NULL, NULL);
 }
 
 static void db_rollback(void)
@@ -487,8 +487,49 @@ void oaf_history_db_close(void)
 {
     pthread_mutex_lock(&g_db_lock);
 
-    if (g_db_ready)
-        oaf_history_db_flush_all();
+    if (g_db_ready && g_pending) {
+        sqlite3_stmt *stmt = NULL;
+        int tx_rc = db_begin();
+
+        if (tx_rc == SQLITE_OK) {
+            tx_rc = sqlite3_prepare_v2(
+                g_db,
+                "INSERT INTO traffic_minute(ts_minute, device_id, app_id, traffic_kb) "
+                "VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(ts_minute, device_id, app_id) DO UPDATE SET "
+                "traffic_kb = traffic_kb + excluded.traffic_kb;",
+                -1, &stmt, NULL);
+            if (tx_rc == SQLITE_OK) {
+                pending_flow_t *p;
+                for (p = g_pending; p; p = p->next) {
+                    int device_id = get_or_create_device_locked(p->mac, "");
+                    if (device_id < 0 || ensure_app_locked(p->app_id) != 0) {
+                        tx_rc = SQLITE_ERROR;
+                        break;
+                    }
+                    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)p->ts_minute);
+                    sqlite3_bind_int(stmt, 2, device_id);
+                    sqlite3_bind_int(stmt, 3, p->app_id);
+                    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)p->traffic_kb);
+                    tx_rc = sqlite3_step(stmt);
+                    sqlite3_reset(stmt);
+                    sqlite3_clear_bindings(stmt);
+                    if (tx_rc != SQLITE_DONE)
+                        break;
+                }
+            }
+        }
+        if (stmt)
+            sqlite3_finalize(stmt);
+        if (tx_rc == SQLITE_DONE || tx_rc == SQLITE_OK) {
+            if (db_commit() == SQLITE_OK)
+                free_pending();
+            else
+                db_rollback();
+        } else {
+            db_rollback();
+        }
+    }
 
     free_pending();
     free_caches();
@@ -559,34 +600,6 @@ int oaf_history_db_record_minute(const char *mac,
 
     pthread_mutex_unlock(&g_db_lock);
     return 0;
-}
-
-static int bind_pending_statements(sqlite3_stmt *upsert_stmt,
-                                   sqlite3_stmt *app_stmt,
-                                   sqlite3_stmt *dev_stmt,
-                                   pending_flow_t *p)
-{
-    int device_id;
-    int rc;
-
-    device_id = get_or_create_device_locked(p->mac, "");
-    if (device_id < 0)
-        return SQLITE_ERROR;
-
-    if (ensure_app_locked(p->app_id) != 0)
-        return SQLITE_ERROR;
-
-    rc = sqlite3_bind_int64(upsert_stmt, 1, (sqlite3_int64)p->ts_minute);
-    if (rc != SQLITE_OK) return rc;
-    rc = sqlite3_bind_int(upsert_stmt, 2, device_id);
-    if (rc != SQLITE_OK) return rc;
-    rc = sqlite3_bind_int(upsert_stmt, 3, p->app_id);
-    if (rc != SQLITE_OK) return rc;
-    rc = sqlite3_bind_int64(upsert_stmt, 4, (sqlite3_int64)p->traffic_kb);
-    if (rc != SQLITE_OK) return rc;
-    (void)app_stmt;
-    (void)dev_stmt;
-    return SQLITE_OK;
 }
 
 int oaf_history_db_flush_due(time_t now)
@@ -708,7 +721,6 @@ FAIL:
         return -1;
     }
 
-    free_pending:
     p = flush_list;
     while (p) {
         next = p->next;
@@ -842,32 +854,6 @@ int oaf_history_db_maintenance(time_t now)
      * Use SQLite strftime in UTC for bucket keys. This matches the Unix
      * timestamp bucketing used by the API and avoids DST-dependent day sizes.
      */
-    if (db_begin() != 0) {
-        pthread_mutex_unlock(&g_db_lock);
-        return -1;
-    }
-
-    if (db_exec(
-            "INSERT INTO traffic_day(day, device_id, app_id, traffic_kb) "
-            "SELECT CAST(strftime('%s', strftime('%Y-%m-%d 00:00:00', ts_minute, 'unixepoch')) AS INTEGER), "
-            "device_id, app_id, SUM(traffic_kb) "
-            "FROM traffic_minute WHERE ts_minute < " 
-            /* literal cutoffs are safe because they are generated integers */
-            "strftime('%s','now','unixepoch') "
-            "GROUP BY 1, device_id, app_id "
-        ) != 0) {
-        /* The statement above is not used; the parameterized form below is. */
-        db_rollback();
-        pthread_mutex_unlock(&g_db_lock);
-        return -1;
-    }
-
-    /*
-     * Re-open transaction and use bound cutoffs. We intentionally do not
-     * execute the non-parameterized statement above; keep archive logic
-     * below as the single authoritative implementation.
-     */
-    db_rollback();
 
     {
         sqlite3_stmt *ins = NULL;
