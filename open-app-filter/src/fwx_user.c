@@ -2537,7 +2537,6 @@ void move_expired_online_visit_to_offline(void)
                 } else {
                     p_info->expire = 0;
                     add_visit_info_node(&node->visit, p_info);
-                    save_visit_record_to_db(node->mac, p_info);
                 }
             }
         }
