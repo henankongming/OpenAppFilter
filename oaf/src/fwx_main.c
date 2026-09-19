@@ -115,7 +115,7 @@ static inline int fwx_ct_has_valid_drop_mark(const struct nf_conn *ct)
 	return fwx_ct_test_bit(ct, FWX_CT_DROP_BIT) &&
 	       (app_id == 0 || fwx_ct_is_valid_appid(app_id));
 }
-#define MAX_OAF_NETLINK_MSG_LEN 1024
+#define MAX_OAF_NETLINK_MSG_LEN 8192
 #define MAX_AF_SUPPORT_DATA_LEN 3000
 #define AF_AC_CHARSET_SIZE 256
 
