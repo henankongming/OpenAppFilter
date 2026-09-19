@@ -495,17 +495,19 @@ int __af_visit_info_report(af_client_info_t *node)
 	unsigned char mac_str[32] = {0};
 	unsigned char ip_str[32] = {0};
 	int i;
-	int count = 0;
 	int total_count = 0;
+	int traffic_count = 0;
 	char *out = NULL;
 	cJSON *visit_obj = NULL;
 	cJSON *visit_info_array = NULL;
+	cJSON *traffic_info_array = NULL;
 	cJSON *root_obj = NULL;
 	struct hlist_head *head;
-	struct hlist_node *tmp;
 	app_visit_info_t *info;
 	app_visit_info_t *info_array[MAX_RECORD_APP_NUM];
+	app_visit_info_t *traffic_array[MAX_RECORD_APP_NUM];
 	int report_count = 0;
+	time_t report_time = af_get_timestamp_sec();
 
 	root_obj = cJSON_CreateObject();
 	if (!root_obj)
@@ -513,10 +515,12 @@ int __af_visit_info_report(af_client_info_t *node)
 		AF_ERROR("create json obj failed");
 		return 0;
 	}
+
 	sprintf(mac_str, MAC_FMT, MAC_ARRAY(node->mac));
 	sprintf(ip_str, "%pI4", &node->ip);
 	cJSON_AddStringToObject(root_obj, "mac", mac_str);
 	cJSON_AddStringToObject(root_obj, "ip", ip_str);
+	cJSON_AddNumberToObject(root_obj, "timestamp", (double)report_time);
 	cJSON_AddNumberToObject(root_obj, "app_num", node->visit_app_num);
 	cJSON_AddNumberToObject(root_obj, "up_flow", (u32)(node->period_flow.up_bytes >> 10));
 	cJSON_AddNumberToObject(root_obj, "down_flow", (u32)(node->period_flow.down_bytes >> 10));
@@ -526,20 +530,28 @@ int __af_visit_info_report(af_client_info_t *node)
 	for (i = 0; i < MAX_VISIT_INFO_HASH_SIZE; i++) {
 		head = &node->visit_info_hash[i];
 		hlist_for_each_entry(info, head, hlist) {
-			if (info->total_num == 0)
+			if (info->total_num == 0 &&
+			    (info->period_up_bytes == 0 && info->period_down_bytes == 0))
 				continue;
+
 			if (info->is_http && info->conn_count <= g_min_http_match_count) {
 				info->total_num = 0;
 				continue;
 			}
-			info_array[total_count++] = info;
-			info->total_num = 0; //clean all
+
+			if (info->total_num > 0 && total_count < MAX_RECORD_APP_NUM)
+				info_array[total_count++] = info;
+
+			if ((info->period_up_bytes > 0 || info->period_down_bytes > 0) &&
+			    traffic_count < MAX_RECORD_APP_NUM)
+				traffic_array[traffic_count++] = info;
 		}
 	}
-	
+
 	if (total_count > 0) {
 		sort(info_array, total_count, sizeof(app_visit_info_t *), compare_visit_info_count, NULL);
-		report_count = total_count > g_max_app_report_count ? g_max_app_report_count : total_count;
+		report_count = total_count > g_max_app_report_count ?
+			      g_max_app_report_count : total_count;
 	}
 
 	visit_info_array = cJSON_CreateArray();
@@ -548,24 +560,53 @@ int __af_visit_info_report(af_client_info_t *node)
 		visit_obj = cJSON_CreateObject();
 		cJSON_AddNumberToObject(visit_obj, "appid", info->app_id);
 		cJSON_AddNumberToObject(visit_obj, "latest_action", info->latest_action);
-		info->total_num = 0;
 		cJSON_AddItemToArray(visit_info_array, visit_obj);
-		count++;
+	}
+
+	traffic_info_array = cJSON_CreateArray();
+	for (i = 0; i < traffic_count; i++) {
+		unsigned long long traffic_kb;
+		info = traffic_array[i];
+		traffic_kb = (info->period_up_bytes + info->period_down_bytes) >> 10;
+		if (traffic_kb == 0)
+			continue;
+		visit_obj = cJSON_CreateObject();
+		cJSON_AddNumberToObject(visit_obj, "appid", info->app_id);
+		cJSON_AddNumberToObject(visit_obj, "traffic_kb", (double)traffic_kb);
+		cJSON_AddItemToArray(traffic_info_array, visit_obj);
+	}
+
+	cJSON_AddItemToObject(root_obj, "visit_info", visit_info_array);
+	cJSON_AddItemToObject(root_obj, "traffic_info", traffic_info_array);
+	out = cJSON_Print(root_obj);
+	if (!out)
+	{
+		cJSON_Delete(root_obj);
+		return 0;
+	}
+	cJSON_Minify(out);
+
+	if (af_send_msg_to_user(out, strlen(out)) < 0) {
+		AF_ERROR("send user traffic report failed for " MAC_FMT "\n",
+			 MAC_ARRAY(node->mac));
+		cJSON_Delete(root_obj);
+		kfree(out);
+		return -1;
+	}
+
+	spin_lock_bh(&node->visit_info_lock);
+	for (i = 0; i < report_count; i++)
+		info_array[i]->total_num = 0;
+
+	for (i = 0; i < traffic_count; i++) {
+		traffic_array[i]->period_up_bytes = 0;
+		traffic_array[i]->period_down_bytes = 0;
 	}
 	spin_unlock_bh(&node->visit_info_lock);
 
-	cJSON_AddItemToObject(root_obj, "visit_info", visit_info_array);
-	out = cJSON_Print(root_obj);
-	if (!out)
-		return 0;
-	cJSON_Minify(out);
-
-	node->report_count++;
-	af_send_msg_to_user(out, strlen(out));
-	cJSON_Delete(root_obj);
-
 	memset(&node->period_flow, 0x0, sizeof(node->period_flow));
-
+	node->report_count++;
+	cJSON_Delete(root_obj);
 	kfree(out);
 	return 0;
 }
