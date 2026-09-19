@@ -8,6 +8,7 @@
         <ul class="tab-list">
             <li class="tab-item active" data-tab="online-records"><%:Online Records%></li>
             <li class="tab-item" data-tab="history-records"><%:History Records%></li>
+            <li class="tab-item" data-tab="traffic-history"><%:Traffic History%></li>
         </ul>
 
         <div id="tab-online-records" class="tab-body active">
@@ -79,6 +80,39 @@
             </table>
             <div id="history-pagination" style="margin-top: 12px;"></div>
         </div>
+
+        <div id="tab-traffic-history" class="tab-body">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0 12px 0;">
+                <input id="q-traffic-mac" class="cbi-input-text" type="text" placeholder="<%:Terminal MAC%>" style="width:200px;">
+                <input id="q-traffic-appid" class="cbi-input-text" type="number" min="1" placeholder="<%:App ID%>" style="width:120px;">
+                <input id="q-traffic-start" class="cbi-input-text" type="datetime-local" style="width:210px;">
+                <input id="q-traffic-end" class="cbi-input-text" type="datetime-local" style="width:210px;">
+                <button type="button" class="cbi-button cbi-button-action" id="btn-traffic-search"><%:Search%></button>
+                <button type="button" class="cbi-button" id="btn-traffic-reset"><%:Reset%></button>
+                <span id="traffic-total" style="color:var(--text-color-medium, #777);"></span>
+            </div>
+
+            <table class="table cbi-section-table" id="traffic-history-table" style="table-layout: fixed; width: 100%;">
+                <colgroup>
+                    <col class="record-time-col">
+                    <col class="record-granularity-col">
+                    <col class="record-app-col">
+                    <col class="record-mac-col">
+                    <col class="record-traffic-col">
+                </colgroup>
+                <tr class="tr table-titles">
+                    <th class="th"><%:Time%></th>
+                    <th class="th"><%:Granularity%></th>
+                    <th class="th"><%:App%></th>
+                    <th class="th">MAC</th>
+                    <th class="th"><%:Traffic%></th>
+                </tr>
+                <tr class="tr">
+                    <td class="td" colspan="5"><em><br /><%:Loading...%></em></td>
+                </tr>
+            </table>
+            <div id="traffic-history-pagination" style="margin-top: 12px;"></div>
+        </div>
     </div>
 </div>
 
@@ -125,18 +159,21 @@
     line-height: 1.55;
 }
 #online-record-table,
-#history-record-table {
+#history-record-table,
+#traffic-history-table {
     --record-app-col-width: 138px;
     --record-app-cell-padding: 14px;
     --record-app-icon-size: 22px;
     --record-app-icon-gap: 7px;
 }
 #online-record-table .record-app-col,
-#history-record-table .record-app-col {
+#history-record-table .record-app-col,
+#traffic-history-table .record-app-col {
     width: var(--record-app-col-width);
 }
 #online-record-table .record-mac-col,
-#history-record-table .record-mac-col {
+#history-record-table .record-mac-col,
+#traffic-history-table .record-mac-col {
     width: 15%;
 }
 #online-record-table .record-hostname-col,
@@ -146,7 +183,8 @@
     width: 11%;
 }
 #online-record-table .record-time-col,
-#history-record-table .record-time-col {
+#history-record-table .record-time-col,
+#traffic-history-table .record-time-col {
     width: 15%;
 }
 #online-record-table .record-duration-col,
@@ -160,7 +198,8 @@
 #online-record-table .td:nth-child(5),
 #online-record-table .td:nth-child(6),
 #history-record-table .td:nth-child(5),
-#history-record-table .td:nth-child(6) {
+#history-record-table .td:nth-child(6),
+#traffic-history-table .td:nth-child(1) {
     white-space: nowrap;
 }
 .record-app-cell {
@@ -195,7 +234,9 @@
     };
     var online_state = { page: 1, page_size: 15, total_num: 0, total_page: 1 };
     var history_state = { page: 1, page_size: 15, total_num: 0, total_page: 1 };
+    var traffic_state = { page: 1, page_size: 50, total_num: 0, total_page: 1 };
     var history_loaded = false;
+    var traffic_loaded = false;
 
     function pad2(n) {
         n = parseInt(n || 0, 10);
@@ -300,6 +341,46 @@
         });
     }
 
+    function format_granularity(value) {
+        var n = parseInt(value || 0, 10);
+        if (n === 0) return "<%:Minute%>";
+        if (n === 1) return "<%:Day%>";
+        if (n === 2) return "<%:Month%>";
+        return "--";
+    }
+
+    function format_traffic_kb(value) {
+        var n = parseInt(value || 0, 10);
+        if (n < 0) n = 0;
+        if (n < 1024) return n + " KB";
+        return (n / 1024).toFixed(2) + " MB";
+    }
+
+    function render_traffic_table(list) {
+        var $tb = $("#traffic-history-table");
+        $tb.find("tr:gt(0)").remove();
+        if (!Array.isArray(list) || list.length === 0) {
+            $tb.append('<tr class="tr"><td class="td" colspan="5"><em><br />' + text.noData + '</em></td></tr>');
+            return;
+        }
+
+        list.forEach(function(item) {
+            var app_id = item.id || item.appid || "";
+            var app_name = app_display_name(app_id, item.name || item.appname || "");
+            var $appCell = $('<td>').addClass('td record-app-td');
+            render_app_cell($appCell, app_id, app_name, item.icon);
+
+            $tb.append(
+                $('<tr>').addClass('tr')
+                    .append($('<td>').addClass('td').text(format_time(item.time || item.timestamp || 0)))
+                    .append($('<td>').addClass('td').text(format_granularity(item.granularity)))
+                    .append($appCell)
+                    .append($('<td>').addClass('td').text(item.mac || "--"))
+                    .append($('<td>').addClass('td').text(format_traffic_kb(item.traffic_kb || item.traffic || 0)))
+            );
+        });
+    }
+
     function render_pagination(container_id, state, go_fn) {
         var $p = $("#" + container_id);
         if (state.total_page <= 1) {
@@ -395,6 +476,38 @@
         });
     }
 
+    function load_history_traffic() {
+        new XHR().get("<%=url('admin/services/oaf/api/app_record/get_history_traffic_records')%>", {
+            mac: $("#q-traffic-mac").val() || "",
+            appid: parseInt($("#q-traffic-appid").val() || "0", 10) || 0,
+            start_time: get_ts_from_input("#q-traffic-start"),
+            end_time: get_ts_from_input("#q-traffic-end"),
+            page: traffic_state.page,
+            page_size: traffic_state.page_size
+        }, function(x, data) {
+            var resp = data || {};
+            traffic_state.total_num = parseInt(resp.total_num || 0, 10);
+            traffic_state.total_page = parseInt(resp.total_page || 1, 10);
+            traffic_state.page = parseInt(resp.page || traffic_state.page, 10);
+            traffic_state.page_size = parseInt(resp.page_size || traffic_state.page_size, 10);
+            render_traffic_table(resp.list || []);
+            render_pagination("traffic-history-pagination", traffic_state, function(p) {
+                traffic_state.page = p;
+                load_history_traffic();
+            });
+        });
+
+        new XHR().get("<%=url('admin/services/oaf/api/app_record/get_history_traffic_total')%>", {
+            mac: $("#q-traffic-mac").val() || "",
+            appid: parseInt($("#q-traffic-appid").val() || "0", 10) || 0,
+            start_time: get_ts_from_input("#q-traffic-start"),
+            end_time: get_ts_from_input("#q-traffic-end")
+        }, function(x, data) {
+            var resp = data || {};
+            $("#traffic-total").text("<%:Total Traffic:%> " + format_traffic_kb(resp.total_kb || resp.traffic_kb || 0));
+        });
+    }
+
     function switch_tab(tab_id) {
         $(".tab-item").removeClass("active");
         $('.tab-item[data-tab="' + tab_id + '"]').addClass("active");
@@ -404,6 +517,10 @@
         if (tab_id === "history-records" && !history_loaded) {
             history_loaded = true;
             load_history_records();
+        }
+        if (tab_id === "traffic-history" && !traffic_loaded) {
+            traffic_loaded = true;
+            load_history_traffic();
         }
     }
 
@@ -426,9 +543,25 @@
         load_history_records();
     });
 
+    $("#btn-traffic-search").on("click", function() {
+        traffic_state.page = 1;
+        load_history_traffic();
+    });
+
+    $("#btn-traffic-reset").on("click", function() {
+        $("#q-traffic-mac").val("");
+        $("#q-traffic-appid").val("");
+        $("#q-traffic-start").val("");
+        $("#q-traffic-end").val("");
+        traffic_state.page = 1;
+        load_history_traffic();
+    });
+
     var urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('tab') === 'history') {
         switch_tab('history-records');
+    } else if (urlParams.get('tab') === 'traffic') {
+        switch_tab('traffic-history');
     }
     load_online_records();
 })();
