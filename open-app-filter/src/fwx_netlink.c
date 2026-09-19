@@ -18,6 +18,7 @@
 #include "fwx_user.h"
 #include "fwx_netlink.h"
 #include "fwx.h"
+#include "fwx_history_db.h"
 #define MAX_NL_RCV_BUF_SIZE 16384
 
 #define REPORT_INTERVAL_SECS 60
@@ -133,6 +134,17 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
     }
     
     
+    struct timeval cur_time;
+    gettimeofday(&cur_time, NULL);
+    time_t cur_time_t = cur_time.tv_sec;
+    time_t report_time = cur_time_t;
+    struct json_object *timestamp_obj = json_object_object_get(root, "timestamp");
+    if (timestamp_obj) {
+        int64_t ts = json_object_get_int64(timestamp_obj);
+        if (ts > 0)
+            report_time = (time_t)ts;
+    }
+
     struct json_object *up_flow_obj = json_object_object_get(root, "up_flow");
     struct json_object *down_flow_obj = json_object_object_get(root, "down_flow");
     unsigned long long total_up_bytes = 0;
@@ -150,14 +162,6 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
     LOG_DEBUG("fwx_netlink: received flow data for %s: up_flow=%llu KB (%llu bytes), down_flow=%llu KB (%llu bytes)\n",
              mac, total_up_bytes / 1024, total_up_bytes, total_down_bytes / 1024, total_down_bytes);
     
-    struct timeval cur_time;
-    gettimeofday(&cur_time, NULL);
-    time_t cur_time_t = cur_time.tv_sec;
-    u_int32_t today_start = get_today_start_timestamp();
-    if ((u_int32_t)cur_time.tv_sec >= today_start && ((u_int32_t)cur_time.tv_sec - today_start) < 120) {
-        json_object_put(root);
-        return;
-    }
     struct tm *tm_info = localtime(&cur_time_t);
     int hour = -1;
     if (tm_info) {
@@ -206,14 +210,40 @@ void fwx_netlink_handler(struct uloop_fd *u, unsigned int ev)
         g_global_hourly_traffic[hour].down_bytes += total_down_bytes;
     }
     update_online_session_flow(node, total_up_bytes, total_down_bytes);
-    
-    struct json_object *visit_array = json_object_object_get(root, "visit_info");
-    if (!visit_array)
-    {
-        json_object_put(root);
-        return;
+
+    struct json_object *traffic_array = json_object_object_get(root, "traffic_info");
+    if (traffic_array && json_object_is_type(traffic_array, json_type_array)) {
+        int traffic_len = json_object_array_length(traffic_array);
+        int ti;
+        for (ti = 0; ti < traffic_len; ti++) {
+            struct json_object *traffic_obj = json_object_array_get_idx(traffic_array, ti);
+            struct json_object *appid_obj;
+            struct json_object *traffic_bytes_obj;
+            int appid;
+            int64_t traffic_bytes;
+
+            if (!traffic_obj)
+                continue;
+            appid_obj = json_object_object_get(traffic_obj, "appid");
+            traffic_bytes_obj = json_object_object_get(traffic_obj, "traffic_bytes");
+            if (!appid_obj || !traffic_bytes_obj)
+                continue;
+            appid = json_object_get_int(appid_obj);
+            traffic_bytes = json_object_get_int64(traffic_bytes_obj);
+            if (appid <= 0 || !fwx_ct_is_valid_appid((u_int32_t)appid) ||
+                traffic_bytes <= 0)
+                continue;
+            if (oaf_history_db_record_minute_bytes(mac, appid, report_time,
+                                                   (uint64_t)traffic_bytes) != 0) {
+                LOG_ERROR("history db: failed to queue traffic mac=%s appid=%d bytes=%lld
+",
+                          mac, appid, (long long)traffic_bytes);
+            }
+        }
     }
 
+    struct json_object *visit_array = json_object_object_get(root, "visit_info");
+    if (visit_array && json_object_is_type(visit_array, json_type_array))
     for (i = 0; i < json_object_array_length(visit_array); i++)
     {
         struct json_object *visit_obj = json_object_array_get_idx(visit_array, i);
