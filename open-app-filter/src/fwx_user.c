@@ -3811,26 +3811,25 @@ void save_client_visit_data_to_file(client_node_t *client, u_int32_t date)
         return;
 
     records = calloc(count, sizeof(*records));
-        if (!records) {
-            LOG_ERROR("history db: failed to allocate %zu visit records for %s\n",
-                      count, client->mac);
-            return;
-        }
+    if (!records) {
+        LOG_ERROR("history db: failed to allocate %zu visit records for %s\n",
+                  count, client->mac);
+        return;
+    }
 
-        list_for_each_entry(p_info, &client->visit, visit) {
-            u_int32_t date_end = date + SECONDS_PER_DAY - 1;
-            if (p_info->first_time < date || p_info->first_time > date_end)
-                continue;
+    list_for_each_entry(p_info, &client->visit, visit) {
+        u_int32_t date_end = date + SECONDS_PER_DAY - 1;
+        if (p_info->first_time < date || p_info->first_time > date_end)
+            continue;
 
-            records[i].app_id = p_info->appid;
-            records[i].start_time = p_info->first_time;
-            records[i].end_time = p_info->latest_time;
-            records[i].duration = (int)(p_info->latest_time - p_info->first_time);
-            if (records[i].duration <= 0)
-                records[i].duration = 1;
-            records[i].action = p_info->action;
-            i++;
-        }
+        records[i].app_id = p_info->appid;
+        records[i].start_time = p_info->first_time;
+        records[i].end_time = p_info->latest_time;
+        records[i].duration = (int)(p_info->latest_time - p_info->first_time);
+        if (records[i].duration <= 0)
+            records[i].duration = 1;
+        records[i].action = p_info->action;
+        i++;
     }
 
     if (oaf_history_db_replace_visit_day(client->mac, (time_t)date,
