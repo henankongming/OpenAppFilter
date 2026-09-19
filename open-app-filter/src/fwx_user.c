@@ -3807,8 +3807,10 @@ void save_client_visit_data_to_file(client_node_t *client, u_int32_t date)
             count++;
     }
 
-    if (count > 0) {
-        records = calloc(count, sizeof(*records));
+    if (count == 0)
+        return;
+
+    records = calloc(count, sizeof(*records));
         if (!records) {
             LOG_ERROR("history db: failed to allocate %zu visit records for %s\n",
                       count, client->mac);
