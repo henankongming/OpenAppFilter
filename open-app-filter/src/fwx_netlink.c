@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <linux/netlink.h>
 #include <linux/socket.h>
