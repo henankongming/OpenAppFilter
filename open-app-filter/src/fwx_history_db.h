@@ -59,10 +59,10 @@ void oaf_history_db_close(void);
 int oaf_history_db_is_ready(void);
 
 /* Traffic history: enqueue one already-aggregated flow sample in memory. */
-int oaf_history_db_record_minute(const char *mac,
-                                 int app_id,
-                                 time_t timestamp,
-                                 uint64_t traffic_kb);
+int oaf_history_db_record_minute_bytes(const char *mac,
+                                       int app_id,
+                                       time_t timestamp,
+                                       uint64_t traffic_bytes);
 
 /* Flush completed minute buckets in one SQLite transaction. */
 int oaf_history_db_flush_due(time_t now);
