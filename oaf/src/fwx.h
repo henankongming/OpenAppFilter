@@ -48,6 +48,17 @@
 
 extern u_int32_t fwx_log_level;
 
+#define FWX_CT_APPID_MASK 0x0000FFFFU
+#define FWX_CT_DNS_MATCH_BIT 0x10000000U
+#define FWX_CT_IGNORE_BIT 0x20000000U
+#define FWX_CT_CLIENT_HELLO_BIT 0x40000000U
+#define FWX_CT_DROP_BIT 0x80000000U
+
+struct nf_conn;
+u_int32_t fwx_ct_get_appid(const struct nf_conn *ct);
+int fwx_ct_is_valid_appid(u_int32_t app_id);
+int fwx_ct_test_bit(const struct nf_conn *ct, u_int32_t bit);
+
 
 
 #define HTTP_GET_METHOD_STR "GET"
