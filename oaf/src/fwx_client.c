@@ -388,6 +388,27 @@ app_visit_info_t *get_or_create_visit_info(af_client_info_t *node, unsigned int 
 	return info;
 }
 
+
+void af_update_client_app_flow(af_client_info_t *node, unsigned int app_id,
+                               unsigned int pkt_dir, unsigned int bytes)
+{
+	app_visit_info_t *info;
+
+	if (!node || app_id == 0 || bytes == 0)
+		return;
+
+	spin_lock_bh(&node->visit_info_lock);
+	info = get_or_create_visit_info(node, app_id);
+	if (info) {
+		info->latest_time = af_get_timestamp_sec();
+		if (pkt_dir == PKT_DIR_UP)
+			info->period_up_bytes += (unsigned long long)bytes;
+		else
+			info->period_down_bytes += (unsigned long long)bytes;
+	}
+	spin_unlock_bh(&node->visit_info_lock);
+}
+
 void flush_expired_visit_info(af_client_info_t *node)
 {
 	int i;
