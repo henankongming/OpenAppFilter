@@ -22,6 +22,7 @@
 #include <sqlite3.h>
 #include <time.h>
 #include "fwx_user.h"
+#include "fwx_history_db.h"
 #include "fwx_config.h"
 #include "fwx_feature.h"
 #include "fwx_feature_online.h"
@@ -3208,222 +3209,261 @@ struct json_object *fwx_api_get_active_app_records(struct json_object *req_obj) 
     return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
 }
 
-struct json_object *fwx_api_get_app_history_records(struct json_object *req_obj) {
+
+typedef struct history_json_ctx {
+    struct json_object *list_obj;
+} history_json_ctx_t;
+
+static int history_traffic_json_cb(const oaf_history_traffic_row_t *row, void *arg)
+{
+    history_json_ctx_t *ctx = (history_json_ctx_t *)arg;
+    struct json_object *item;
+    client_node_t *node = NULL;
+    const char *hostname = "";
+    const char *nickname = "";
+
+    if (!row || !ctx || !ctx->list_obj)
+        return -1;
+
+    item = json_object_new_object();
+    if (!item)
+        return -1;
+
+    node = find_client_node(row->mac);
+    if (node) {
+        hostname = node->hostname;
+        nickname = node->nickname;
+    }
+
+    json_object_object_add(item, "mac", json_object_new_string(row->mac));
+    json_object_object_add(item, "hostname", json_object_new_string(hostname ? hostname : ""));
+    json_object_object_add(item, "nickname", json_object_new_string(nickname ? nickname : ""));
+    json_object_object_add(item, "appid", json_object_new_int(row->app_id));
+    json_object_object_add(item, "id", json_object_new_int(row->app_id));
+    json_object_object_add(item, "appname", json_object_new_string(row->app_name[0] ? row->app_name : "Unknown"));
+    json_object_object_add(item, "name", json_object_new_string(row->app_name[0] ? row->app_name : "Unknown"));
+    add_app_icon_missing_flag(item, row->app_id);
+    json_object_object_add(item, "time", json_object_new_int64(row->timestamp));
+    json_object_object_add(item, "timestamp", json_object_new_int64(row->timestamp));
+    json_object_object_add(item, "granularity", json_object_new_int(row->granularity));
+    json_object_object_add(item, "traffic_kb", json_object_new_int64(row->traffic_kb));
+    json_object_object_add(item, "traffic", json_object_new_int64(row->traffic_kb));
+
+    json_object_array_add(ctx->list_obj, item);
+    return 0;
+}
+
+static int history_visit_json_cb(const oaf_history_visit_row_t *row, void *arg)
+{
+    history_json_ctx_t *ctx = (history_json_ctx_t *)arg;
+    struct json_object *item;
+    const char *app_name;
+
+    if (!row || !ctx || !ctx->list_obj)
+        return -1;
+
+    item = json_object_new_object();
+    if (!item)
+        return -1;
+
+    app_name = get_app_name_by_id(row->app_id);
+    if (!app_name)
+        app_name = "Unknown";
+
+    json_object_object_add(item, "mac", json_object_new_string(row->mac));
+    json_object_object_add(item, "appid", json_object_new_int(row->app_id));
+    json_object_object_add(item, "id", json_object_new_int(row->app_id));
+    json_object_object_add(item, "name", json_object_new_string(app_name));
+    json_object_object_add(item, "appname", json_object_new_string(app_name));
+    add_app_icon_missing_flag(item, row->app_id);
+    json_object_object_add(item, "act", json_object_new_int(row->action));
+    json_object_object_add(item, "online", json_object_new_int(0));
+    json_object_object_add(item, "ft", json_object_new_int64(row->start_time));
+    json_object_object_add(item, "lt", json_object_new_int64(row->end_time));
+    json_object_object_add(item, "tt", json_object_new_int(row->duration));
+    json_object_object_add(item, "latest_action", json_object_new_int(row->action));
+    json_object_object_add(item, "first_time", json_object_new_int64(row->start_time));
+    json_object_object_add(item, "latest_time", json_object_new_int64(row->end_time));
+    json_object_object_add(item, "total_time", json_object_new_int(row->duration));
+
+    {
+        client_node_t *node = find_client_node(row->mac);
+        const char *hostname = node ? node->hostname : "";
+        const char *nickname = node ? node->nickname : "";
+        json_object_object_add(item, "hostname", json_object_new_string(hostname));
+        json_object_object_add(item, "nickname", json_object_new_string(nickname));
+    }
+
+    json_object_array_add(ctx->list_obj, item);
+    return 0;
+}
+
+static void history_parse_request(struct json_object *req_obj,
+                                   const char **mac,
+                                   int *appid,
+                                   time_t *start_time,
+                                   time_t *end_time,
+                                   int *page,
+                                   int *page_size)
+{
+    struct json_object *obj;
+
+    if (mac) *mac = NULL;
+    if (appid) *appid = 0;
+    if (start_time) *start_time = 0;
+    if (end_time) *end_time = 0;
+    if (page) *page = 1;
+    if (page_size) *page_size = 15;
+
+    if (!req_obj)
+        return;
+
+    if (mac && json_object_object_get_ex(req_obj, "mac", &obj)) {
+        *mac = json_object_get_string(obj);
+        if (*mac && **mac == '\0')
+            *mac = NULL;
+    }
+    if (appid && json_object_object_get_ex(req_obj, "appid", &obj)) {
+        *appid = json_object_get_int(obj);
+        if (*appid < 0)
+            *appid = 0;
+    }
+    if (start_time && json_object_object_get_ex(req_obj, "start_time", &obj))
+        *start_time = (time_t)json_object_get_int64(obj);
+    if (end_time && json_object_object_get_ex(req_obj, "end_time", &obj))
+        *end_time = (time_t)json_object_get_int64(obj);
+    if (page && json_object_object_get_ex(req_obj, "page", &obj)) {
+        *page = json_object_get_int(obj);
+        if (*page < 1) *page = 1;
+    }
+    if (page_size && json_object_object_get_ex(req_obj, "page_size", &obj)) {
+        *page_size = json_object_get_int(obj);
+        if (*page_size < 1) *page_size = 15;
+        if (*page_size > 200) *page_size = 200;
+    }
+
+    if (start_time && end_time && *start_time > 0 && *end_time > 0 &&
+        *start_time > *end_time) {
+        time_t t = *start_time;
+        *start_time = *end_time;
+        *end_time = t;
+    }
+}
+
+struct json_object *fwx_api_get_app_history_records(struct json_object *req_obj)
+{
+    const char *mac = NULL;
+    int appid = 0;
+    time_t start_time = 0;
+    time_t end_time = 0;
     int page = 1;
     int page_size = 15;
-    int total_num = 0;
-    int total_page = 1;
-    int start_idx = 0;
-    int end_idx = 0;
-    int appid = 0;
-    u_int32_t start_time = 0;
-    u_int32_t end_time = 0;
-    const char *mac = NULL;
-    sqlite3 *db = NULL;
-    sqlite3_stmt *stmt = NULL;
-    int rc = SQLITE_OK;
-    int bind_idx = 1;
-    char db_path[512] = {0};
-    char where_sql[512] = " WHERE 1=1";
-    char count_sql[1024] = {0};
-    char query_sql[1200] = {0};
-    struct json_object *data_obj = json_object_new_object();
-    struct json_object *list_obj = json_object_new_array();
+    int64_t total_num = 0;
+    struct json_object *data_obj;
+    struct json_object *list_obj;
+    history_json_ctx_t ctx;
+    int rc;
 
-    if (req_obj) {
-        struct json_object *mac_obj = json_object_object_get(req_obj, "mac");
-        struct json_object *appid_obj = json_object_object_get(req_obj, "appid");
-        struct json_object *start_time_obj = json_object_object_get(req_obj, "start_time");
-        struct json_object *end_time_obj = json_object_object_get(req_obj, "end_time");
-        struct json_object *page_obj = json_object_object_get(req_obj, "page");
-        struct json_object *page_size_obj = json_object_object_get(req_obj, "page_size");
+    history_parse_request(req_obj, &mac, &appid, &start_time, &end_time, &page, &page_size);
 
-        if (mac_obj) {
-            mac = json_object_get_string(mac_obj);
-            if (mac && strlen(mac) == 0)
-                mac = NULL;
-        }
-        if (appid_obj) {
-            appid = json_object_get_int(appid_obj);
-            if (appid < 0)
-                appid = 0;
-        }
-        if (start_time_obj) {
-            start_time = (u_int32_t)json_object_get_int64(start_time_obj);
-        }
-        if (end_time_obj) {
-            end_time = (u_int32_t)json_object_get_int64(end_time_obj);
-        }
-        if (page_obj) {
-            page = json_object_get_int(page_obj);
-            if (page < 1)
-                page = 1;
-        }
-        if (page_size_obj) {
-            page_size = json_object_get_int(page_size_obj);
-            if (page_size < 1)
-                page_size = 15;
-            if (page_size > 200)
-                page_size = 200;
-        }
+    data_obj = json_object_new_object();
+    list_obj = json_object_new_array();
+    if (!data_obj || !list_obj) {
+        if (data_obj) json_object_put(data_obj);
+        if (list_obj) json_object_put(list_obj);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     }
 
-    if (start_time > 0 && end_time > 0 && start_time > end_time) {
-        u_int32_t temp = start_time;
-        start_time = end_time;
-        end_time = temp;
-    }
-
-    update_client_nickname();
-
-    snprintf(db_path, sizeof(db_path), "%s/client.db", get_history_data_root_dir());
-    if (access(db_path, F_OK) != 0) {
-        json_object_object_add(data_obj, "total_num", json_object_new_int(0));
-        json_object_object_add(data_obj, "total_page", json_object_new_int(1));
-        json_object_object_add(data_obj, "page", json_object_new_int(page));
-        json_object_object_add(data_obj, "page_size", json_object_new_int(page_size));
-        json_object_object_add(data_obj, "list", list_obj);
-        return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
-    }
-
-    rc = sqlite3_open(db_path, &db);
-    if (rc != SQLITE_OK) {
-        if (db)
-            sqlite3_close(db);
+    ctx.list_obj = list_obj;
+    rc = oaf_history_db_query_visits(mac, appid, start_time, end_time,
+                                     page, page_size, history_visit_json_cb,
+                                     &ctx, &total_num);
+    if (rc != 0) {
         json_object_put(data_obj);
         json_object_put(list_obj);
         return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
     }
 
-    sqlite3_exec(db,
-                 "CREATE TABLE IF NOT EXISTS app_visit_record ("
-                 "mac TEXT NOT NULL,"
-                 "record_date INTEGER NOT NULL,"
-                 "appid INTEGER NOT NULL,"
-                 "start_time INTEGER NOT NULL,"
-                 "end_time INTEGER NOT NULL,"
-                 "duration INTEGER NOT NULL,"
-                 "action INTEGER NOT NULL"
-                 ");",
-                 NULL, NULL, NULL);
-
-    if (mac) {
-        strncat(where_sql, " AND mac = ?", sizeof(where_sql) - strlen(where_sql) - 1);
-    }
-    if (appid > 0) {
-        strncat(where_sql, " AND appid = ?", sizeof(where_sql) - strlen(where_sql) - 1);
-    }
-    if (start_time > 0 && end_time > 0) {
-        strncat(where_sql, " AND end_time >= ? AND start_time <= ?", sizeof(where_sql) - strlen(where_sql) - 1);
-    } else if (start_time > 0) {
-        strncat(where_sql, " AND end_time >= ?", sizeof(where_sql) - strlen(where_sql) - 1);
-    } else if (end_time > 0) {
-        strncat(where_sql, " AND start_time <= ?", sizeof(where_sql) - strlen(where_sql) - 1);
-    }
-
-    snprintf(count_sql, sizeof(count_sql), "SELECT COUNT(1) FROM app_visit_record%s;", where_sql);
-    rc = sqlite3_prepare_v2(db, count_sql, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        goto CLEANUP;
-    }
-    bind_app_history_filters(stmt, mac, appid, start_time, end_time);
-    rc = sqlite3_step(stmt);
-    if (rc == SQLITE_ROW) {
-        total_num = sqlite3_column_int(stmt, 0);
-    } else {
-        rc = SQLITE_ERROR;
-        goto CLEANUP;
-    }
-    sqlite3_finalize(stmt);
-    stmt = NULL;
-
-    total_page = (total_num + page_size - 1) / page_size;
-    if (total_page < 1)
-        total_page = 1;
-    if (page > total_page)
-        page = total_page;
-
-    start_idx = (page - 1) * page_size;
-    end_idx = start_idx + page_size;
-    if (end_idx > total_num)
-        end_idx = total_num;
-
-    if (total_num > 0 && start_idx < end_idx) {
-        snprintf(query_sql, sizeof(query_sql),
-                 "SELECT mac, appid, action, start_time, end_time, duration "
-                 "FROM app_visit_record%s "
-                 "ORDER BY end_time DESC, duration ASC "
-                 "LIMIT ? OFFSET ?;",
-                 where_sql);
-        rc = sqlite3_prepare_v2(db, query_sql, -1, &stmt, NULL);
-        if (rc != SQLITE_OK) {
-            goto CLEANUP;
-        }
-
-        bind_idx = bind_app_history_filters(stmt, mac, appid, start_time, end_time);
-        sqlite3_bind_int(stmt, bind_idx++, page_size);
-        sqlite3_bind_int(stmt, bind_idx++, start_idx);
-
-        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-            const char *row_mac = (const char *)sqlite3_column_text(stmt, 0);
-            int row_appid = sqlite3_column_int(stmt, 1);
-            int row_action = sqlite3_column_int(stmt, 2);
-            u_int32_t row_start = (u_int32_t)sqlite3_column_int64(stmt, 3);
-            u_int32_t row_end = (u_int32_t)sqlite3_column_int64(stmt, 4);
-            int row_duration = sqlite3_column_int(stmt, 5);
-            struct json_object *item_obj = json_object_new_object();
-            client_node_t *node = find_client_node(row_mac ? row_mac : "");
-            const char *hostname = "";
-            const char *nickname = "";
-
-            if (node) {
-                hostname = node->hostname;
-                nickname = node->nickname;
-            }
-
-            json_object_object_add(item_obj, "mac", json_object_new_string(row_mac ? row_mac : ""));
-            json_object_object_add(item_obj, "hostname", json_object_new_string(hostname ? hostname : ""));
-            json_object_object_add(item_obj, "nickname", json_object_new_string(nickname ? nickname : ""));
-            json_object_object_add(item_obj, "name", json_object_new_string(get_app_name_by_id(row_appid)));
-            json_object_object_add(item_obj, "id", json_object_new_int(row_appid));
-            add_app_icon_missing_flag(item_obj, row_appid);
-            json_object_object_add(item_obj, "act", json_object_new_int(row_action));
-            json_object_object_add(item_obj, "online", json_object_new_int(0));
-            json_object_object_add(item_obj, "ft", json_object_new_int(row_start));
-            json_object_object_add(item_obj, "lt", json_object_new_int(row_end));
-            json_object_object_add(item_obj, "tt", json_object_new_int(row_duration));
-            json_object_object_add(item_obj, "appname", json_object_new_string(get_app_name_by_id(row_appid)));
-            json_object_object_add(item_obj, "appid", json_object_new_int(row_appid));
-            json_object_object_add(item_obj, "latest_action", json_object_new_int(row_action));
-            json_object_object_add(item_obj, "first_time", json_object_new_int(row_start));
-            json_object_object_add(item_obj, "latest_time", json_object_new_int(row_end));
-            json_object_object_add(item_obj, "total_time", json_object_new_int(row_duration));
-            json_object_array_add(list_obj, item_obj);
-        }
-        if (rc != SQLITE_DONE) {
-            goto CLEANUP;
-        }
-    }
-
-    rc = SQLITE_OK;
-
-CLEANUP:
-    if (stmt)
-        sqlite3_finalize(stmt);
-    if (db)
-        sqlite3_close(db);
-
-    if (rc != SQLITE_OK) {
-        json_object_put(data_obj);
-        json_object_put(list_obj);
-        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
-    }
-
-    json_object_object_add(data_obj, "total_num", json_object_new_int(total_num));
-    json_object_object_add(data_obj, "total_page", json_object_new_int(total_page));
+    json_object_object_add(data_obj, "total_num", json_object_new_int64(total_num));
+    json_object_object_add(data_obj, "total_page",
+                           json_object_new_int64((total_num + page_size - 1) / page_size > 0 ?
+                                                 (total_num + page_size - 1) / page_size : 1));
     json_object_object_add(data_obj, "page", json_object_new_int(page));
     json_object_object_add(data_obj, "page_size", json_object_new_int(page_size));
     json_object_object_add(data_obj, "list", list_obj);
+    return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
+}
+
+struct json_object *fwx_api_get_history_traffic_records(struct json_object *req_obj)
+{
+    const char *mac = NULL;
+    int appid = 0;
+    time_t start_time = 0;
+    time_t end_time = 0;
+    int page = 1;
+    int page_size = 50;
+    int64_t total_num = 0;
+    struct json_object *data_obj;
+    struct json_object *list_obj;
+    history_json_ctx_t ctx;
+    int rc;
+
+    history_parse_request(req_obj, &mac, &appid, &start_time, &end_time, &page, &page_size);
+
+    data_obj = json_object_new_object();
+    list_obj = json_object_new_array();
+    if (!data_obj || !list_obj) {
+        if (data_obj) json_object_put(data_obj);
+        if (list_obj) json_object_put(list_obj);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
+
+    ctx.list_obj = list_obj;
+    rc = oaf_history_db_query_traffic(mac, appid, start_time, end_time,
+                                      page, page_size, history_traffic_json_cb,
+                                      &ctx, &total_num);
+    if (rc != 0) {
+        json_object_put(data_obj);
+        json_object_put(list_obj);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
+
+    json_object_object_add(data_obj, "total_num", json_object_new_int64(total_num));
+    json_object_object_add(data_obj, "total_page",
+                           json_object_new_int64((total_num + page_size - 1) / page_size > 0 ?
+                                                 (total_num + page_size - 1) / page_size : 1));
+    json_object_object_add(data_obj, "page", json_object_new_int(page));
+    json_object_object_add(data_obj, "page_size", json_object_new_int(page_size));
+    json_object_object_add(data_obj, "list", list_obj);
+    return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
+}
+
+struct json_object *fwx_api_get_history_traffic_total(struct json_object *req_obj)
+{
+    const char *mac = NULL;
+    int appid = 0;
+    time_t start_time = 0;
+    time_t end_time = 0;
+    int64_t total_kb = 0;
+    struct json_object *data_obj;
+    int rc;
+
+    history_parse_request(req_obj, &mac, &appid, &start_time, &end_time, NULL, NULL);
+
+    data_obj = json_object_new_object();
+    if (!data_obj)
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+
+    rc = oaf_history_db_sum_traffic(mac, appid, start_time, end_time, &total_kb);
+    if (rc != 0) {
+        json_object_put(data_obj);
+        return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+    }
+
+    json_object_object_add(data_obj, "traffic_kb", json_object_new_int64(total_kb));
+    json_object_object_add(data_obj, "total_kb", json_object_new_int64(total_kb));
+    json_object_object_add(data_obj, "start_time", json_object_new_int64(start_time));
+    json_object_object_add(data_obj, "end_time", json_object_new_int64(end_time));
     return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
 }
 
@@ -8570,6 +8610,8 @@ struct json_object *fwx_api_get_init_status(struct json_object *req_obj);
 struct json_object *fwx_api_set_init_status(struct json_object *req_obj);
 struct json_object *fwx_api_set_dashboard_param(struct json_object *req_obj);
 struct json_object *fwx_api_get_system_base_info(struct json_object *req_obj);
+struct json_object *fwx_api_get_history_traffic_records(struct json_object *req_obj);
+struct json_object *fwx_api_get_history_traffic_total(struct json_object *req_obj);
 
 
 
@@ -8595,6 +8637,8 @@ static fwx_api_node_t fwx_api_node_list[] = {
     {"get_active_users", fwx_api_get_active_users, 0, FWX_API_METHOD_GET},
     {"get_active_app_records", fwx_api_get_active_app_records, 0, FWX_API_METHOD_GET},
     {"get_app_history_records", fwx_api_get_app_history_records, 0, FWX_API_METHOD_GET},
+    {"get_history_traffic_records", fwx_api_get_history_traffic_records, 0, FWX_API_METHOD_GET},
+    {"get_history_traffic_total", fwx_api_get_history_traffic_total, 0, FWX_API_METHOD_GET},
     {"get_filter_rules", fwx_api_get_filter_rules, 0, FWX_API_METHOD_GET},
     {"add_filter_rule", fwx_api_add_filter_rule, 1, FWX_API_METHOD_POST},
     {"update_filter_rule", fwx_api_update_filter_rule, 1, FWX_API_METHOD_POST},
