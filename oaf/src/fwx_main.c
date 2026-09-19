@@ -69,11 +69,6 @@ u_int32_t fwx_log_level = 3;
 #define feature_list_write_unlock() write_unlock_bh(&af_feature_lock);
 
 
-#define FWX_CT_APPID_MASK 0x0000FFFFU
-#define FWX_CT_DNS_MATCH_BIT 0x10000000U
-#define FWX_CT_IGNORE_BIT 0x20000000U
-#define FWX_CT_CLIENT_HELLO_BIT 0x40000000U
-#define FWX_CT_DROP_BIT 0x80000000U
 
 static inline u_int32_t fwx_ct_mark_get(const struct nf_conn *ct)
 {
@@ -88,12 +83,12 @@ static inline void fwx_ct_mark_update(struct nf_conn *ct, u_int32_t mask,
 	WRITE_ONCE(ct->mark, (mark & ~mask) | (value & mask));
 }
 
-static inline u_int32_t fwx_ct_get_appid(const struct nf_conn *ct)
+u_int32_t fwx_ct_get_appid(const struct nf_conn *ct)
 {
 	return fwx_ct_mark_get(ct) & FWX_CT_APPID_MASK;
 }
 
-static inline int fwx_ct_is_valid_appid(u_int32_t app_id)
+int fwx_ct_is_valid_appid(u_int32_t app_id)
 {
 	return app_id > 0 && app_id <= 32000;
 }
@@ -103,7 +98,7 @@ static inline void fwx_ct_set_appid(struct nf_conn *ct, u_int32_t app_id)
 	fwx_ct_mark_update(ct, FWX_CT_APPID_MASK, app_id);
 }
 
-static inline int fwx_ct_test_bit(const struct nf_conn *ct, u_int32_t bit)
+int fwx_ct_test_bit(const struct nf_conn *ct, u_int32_t bit)
 {
 	return (fwx_ct_mark_get(ct) & bit) != 0;
 }
