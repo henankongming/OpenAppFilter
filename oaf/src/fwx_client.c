@@ -596,7 +596,7 @@ int __af_visit_info_report(af_client_info_t *node)
 	}
 
 	spin_lock_bh(&node->visit_info_lock);
-	for (i = 0; i < report_count; i++)
+	for (i = 0; i < total_count; i++)
 		info_array[i]->total_num = 0;
 
 	for (i = 0; i < traffic_count; i++) {
